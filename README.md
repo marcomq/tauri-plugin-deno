@@ -1,1 +1,1 @@
-# tauri-plugin-deno
+# Tauri Plugin deno
