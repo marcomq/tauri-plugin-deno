@@ -13,5 +13,13 @@ tauri = { version = "2.2.4" }
 serde = "1.0"
 thiserror = "2"
 
+deno_core = "0.339.0"
+deno_ast = { version = "0.45.1", features = ["transpiling"] }
+deno_error = "0.5.6"
+reqwest = "0.12"
+lazy_static = "1.5.0"
+tokio = { version = "1.43.0", features = ["full"] }
+
 [build-dependencies]
 tauri-plugin = { version = "2.0.3", features = ["build"] }
+deno_core = "0.339.0"
