@@ -1,3 +1,8 @@
+//  Tauri Plugin Deno
+//  © Copyright 2025, by Marco Mengelkoch
+//  Licensed under MIT License, see License file for more details
+//  git clone https://github.com/marcomq/tauri-plugin-deno
+
 use deno_ast::MediaType;
 use deno_ast::ParseParams;
 use deno_core::error::CoreError;
@@ -48,12 +53,71 @@ async fn op_set_timeout(delay: f64) {
 struct TsModuleLoader;
 
 lazy_static! {
-    static ref SEND_RECEIVE: Mutex<(mpsc::Sender<String>, mpsc::Receiver<String>)> =
-        Mutex::new(mpsc::channel());
+    static ref SEND_RECEIVE: Mutex<(mpsc::SyncSender<JsRequest>, mpsc::Receiver<JsRequest>)> =
+        Mutex::new(mpsc::sync_channel(1));
 }
 
 static RUNTIME_SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/RUNJS_SNAPSHOT.bin"));
 extension!(runjs, ops = [op_set_timeout,]);
+
+
+/// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the deno APIs.
+pub trait DenoExt<R: Runtime> {
+    fn deno(&self) -> &Deno<R>;
+    fn run_code(&self, payload: RunCodeRequest) -> crate::Result<StringResponse>;
+    fn register_function(&self, payload: RegisterRequest) -> crate::Result<StringResponse>;
+    fn call_function(&self, payload: CallFnRequest) -> crate::Result<StringResponse>;
+    fn read_variable(&self, payload: ReadVarRequest) -> crate::Result<StringResponse>;
+}
+
+macro_rules! send_receive_result {
+  ($payload:expr) => {
+    {
+    let send_receive_guard = SEND_RECEIVE.lock().unwrap();
+    send_receive_guard.0.send($payload)?;
+    if let JsRequest::StringResponse(result) = send_receive_guard.1.recv()? {
+      Ok(result)
+    }
+    else {
+      Err(Error::String("wrong response type".into()))
+    }}
+  };
+}
+
+impl<R: Runtime, T: Manager<R>> crate::DenoExt<R> for T {
+    fn deno(&self) -> &Deno<R> {
+        self.state::<Deno<R>>().inner()
+    }
+    fn run_code(&self, payload: RunCodeRequest) -> crate::Result<StringResponse> {
+      send_receive_result!(models::JsRequest::RunCodeRequest(payload))
+    }
+    fn register_function(&self, payload: RegisterRequest) -> crate::Result<StringResponse> {
+      send_receive_result!(models::JsRequest::RegisterRequest(payload))
+    }
+    fn call_function(&self, payload: CallFnRequest) -> crate::Result<StringResponse> {
+      send_receive_result!(models::JsRequest::CallFnRequest(payload))
+    }
+    fn read_variable(&self, payload: ReadVarRequest) -> crate::Result<StringResponse> {
+      send_receive_result!(models::JsRequest::ReadVarRequest(payload))
+    }
+}
+
+/// Initializes the plugin.
+pub fn init<R: Runtime>() -> TauriPlugin<R> {
+    Builder::new("deno")
+        .invoke_handler(tauri::generate_handler![commands::call_function])
+        .setup(|app, api| {
+            start_deno_thread();
+            #[cfg(mobile)]
+            let deno = mobile::init(app, api)?;
+            #[cfg(desktop)]
+            let deno = desktop::init(app, api)?;
+            app.manage(deno);
+            Ok(())
+        })
+        .build()
+}
+
 
 impl deno_core::ModuleLoader for TsModuleLoader {
     fn resolve(
@@ -154,7 +218,7 @@ fn init_main_js(js_runtime: &mut JsRuntime, tokio_runtime: &tokio::runtime::Runt
         .expect("Error initializing main.js");
 }
 
-fn vec_to_v8_vec(my_vec: Vec<String>, js_runtime: &mut JsRuntime) -> Vec<v8::Global<v8::Value>> {
+fn vec_to_v8_vec(my_vec: Vec<JsMany>, js_runtime: &mut JsRuntime) -> Vec<v8::Global<v8::Value>> {
     let mut v8_vec: vec::Vec<v8::Global<v8::Value>> = vec![];
     let mut scope = js_runtime.handle_scope();
     v8_vec.reserve(my_vec.len());
@@ -168,7 +232,7 @@ fn vec_to_v8_vec(my_vec: Vec<String>, js_runtime: &mut JsRuntime) -> Vec<v8::Glo
 
 /// Call given javascript function and return result
 async fn call_js(
-    args: Vec<String>,
+    args: Vec<JsMany>,
     js_runtime: &mut JsRuntime,
     js_fn: &v8::Global<v8::Function>,
 ) -> std::result::Result<String, CoreError> {
@@ -212,9 +276,10 @@ fn js_runtime_worker() {
     init_main_js(&mut js_runtime, &tokio_runtime);
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
 
-    let mut register_fn = |fn_name: String, js_runtime: &mut JsRuntime| {
+    let register_fn = |fn_name: String, js_runtime: &mut JsRuntime, fn_map: &mut HashMap<String, v8::Global<v8::Function>> | -> std::result::Result<String, CoreError> {
         let my_fn = get_fn(js_runtime, &fn_name);
-        global_fns.insert(fn_name, my_fn);
+        fn_map.insert(fn_name, my_fn);
+        Ok("Ok".to_string())
     };
 
     let js_allowed_fns = if let Ok(fn_s) = read_var("_tauri_plugin_functions", &mut js_runtime) {
@@ -223,63 +288,31 @@ fn js_runtime_worker() {
         vec![]
     };
     for function_name in js_allowed_fns {
-        register_fn(function_name, &mut js_runtime);
+        register_fn(function_name.clone(), &mut js_runtime, &mut global_fns).expect(&format!("cannot register function {function_name}"));
     }
     loop {
         let send_receive = SEND_RECEIVE.lock().unwrap();
-        if let Ok(_received) = send_receive.1.recv() {
-            let val = tokio_runtime
-                .block_on(call_js(vec![], &mut js_runtime, &global_fns["myFn"]))
-                .expect("TODO, handle error");
-
-            dbg!(&val);
-
-            let my_var = read_var("myTest", &mut js_runtime).expect("TODO, handle error");
-            dbg!(&my_var);
-
-            break;
+        if let Ok(received) = send_receive.1.recv() {
+          let result = match received {
+            JsRequest::RunCodeRequest(req) => exec_js(req.value, &mut js_runtime),
+            JsRequest::ReadVarRequest(req) => read_var(&req.value, &mut js_runtime),
+            JsRequest::RegisterRequest(req) => register_fn(req.function_name, &mut js_runtime, &mut global_fns),
+            JsRequest::CallFnRequest(req) => {
+              tokio_runtime
+                .block_on(call_js(req.args, &mut js_runtime, &global_fns[&req.function_name]))
+            },
+            _ => break,
+          };
+          let response = match result {
+            Ok(val) => val,
+            Err(err) => format!("error: {}", err.to_string())
+          };
+          let _ignore = send_receive.0.send(JsRequest::StringResponse(StringResponse { value: response }));
         }
     }
-    let _val = tokio_runtime
-        .block_on(js_runtime.run_event_loop(Default::default()))
-        .expect("Error initializing main.js");
     println!("exit thread");
 }
 
 fn start_deno_thread() {
-    let sender = thread::spawn(js_runtime_worker);
-    {
-        let send_receive = SEND_RECEIVE.lock().unwrap();
-
-        thread::sleep(std::time::Duration::from_millis(1000));
-        send_receive.0.send("test".into()).expect("damn it..");
-    }
-    sender.join().unwrap();
-}
-
-/// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the deno APIs.
-pub trait DenoExt<R: Runtime> {
-    fn deno(&self) -> &Deno<R>;
-}
-
-impl<R: Runtime, T: Manager<R>> crate::DenoExt<R> for T {
-    fn deno(&self) -> &Deno<R> {
-        self.state::<Deno<R>>().inner()
-    }
-}
-
-/// Initializes the plugin.
-pub fn init<R: Runtime>() -> TauriPlugin<R> {
-    Builder::new("deno")
-        .invoke_handler(tauri::generate_handler![commands::ping])
-        .setup(|app, api| {
-            start_deno_thread();
-            #[cfg(mobile)]
-            let deno = mobile::init(app, api)?;
-            #[cfg(desktop)]
-            let deno = desktop::init(app, api)?;
-            app.manage(deno);
-            Ok(())
-        })
-        .build()
+    let _detached = thread::spawn(js_runtime_worker);
 }
