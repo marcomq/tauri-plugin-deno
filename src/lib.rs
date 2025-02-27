@@ -15,15 +15,14 @@ use deno_core::JsRuntime;
 use deno_core::ModuleLoadResponse;
 use deno_core::ModuleSourceCode;
 use deno_error::JsErrorBox;
-use lazy_static::lazy_static;
 pub use models::*;
 use std::collections::HashMap;
 use std::env;
 use std::rc::Rc;
-use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::LazyLock;
 use std::thread;
 use std::vec;
+use tokio::sync::broadcast;
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Manager, Runtime,
@@ -52,14 +51,13 @@ async fn op_set_timeout(delay: f64) {
 
 struct TsModuleLoader;
 
-lazy_static! {
-    static ref SEND_RECEIVE: Mutex<(mpsc::SyncSender<JsRequest>, mpsc::Receiver<JsRequest>)> =
-        Mutex::new(mpsc::sync_channel(1));
-}
+  static SEND_RECEIVE: LazyLock<(broadcast::Sender<JsRequest>, broadcast::Receiver<JsRequest>)> =
+      LazyLock::new(|| broadcast::channel(1000));
+
+
 
 static RUNTIME_SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/RUNJS_SNAPSHOT.bin"));
 extension!(runjs, ops = [op_set_timeout,]);
-
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the deno APIs.
 pub trait DenoExt<R: Runtime> {
@@ -71,17 +69,17 @@ pub trait DenoExt<R: Runtime> {
 }
 
 macro_rules! send_receive_result {
-  ($payload:expr) => {
-    {
-    let send_receive_guard = SEND_RECEIVE.lock().unwrap();
-    send_receive_guard.0.send($payload)?;
-    if let JsRequest::StringResponse(result) = send_receive_guard.1.recv()? {
-      Ok(result)
-    }
-    else {
-      Err(Error::String("wrong response type".into()))
-    }}
-  };
+    ($payload:expr) => {{
+        dbg!("send_receive_result");
+        dbg!("send_receive_result 2");
+        SEND_RECEIVE.0.send($payload);
+        let mut rx = SEND_RECEIVE.1.resubscribe();
+        if let Ok(JsRequest::StringResponse(result)) = rx.blocking_recv() {
+            Ok(result)
+        } else {
+            Err(Error::String("wrong response type".into()))
+        }
+    }};
 }
 
 impl<R: Runtime, T: Manager<R>> crate::DenoExt<R> for T {
@@ -89,23 +87,28 @@ impl<R: Runtime, T: Manager<R>> crate::DenoExt<R> for T {
         self.state::<Deno<R>>().inner()
     }
     fn run_code(&self, payload: RunCodeRequest) -> crate::Result<StringResponse> {
-      send_receive_result!(models::JsRequest::RunCodeRequest(payload))
+        send_receive_result!(models::JsRequest::RunCodeRequest(payload))
     }
     fn register_function(&self, payload: RegisterRequest) -> crate::Result<StringResponse> {
-      send_receive_result!(models::JsRequest::RegisterRequest(payload))
+        send_receive_result!(models::JsRequest::RegisterRequest(payload))
     }
     fn call_function(&self, payload: CallFnRequest) -> crate::Result<StringResponse> {
-      send_receive_result!(models::JsRequest::CallFnRequest(payload))
+        send_receive_result!(models::JsRequest::CallFnRequest(payload))
     }
     fn read_variable(&self, payload: ReadVarRequest) -> crate::Result<StringResponse> {
-      send_receive_result!(models::JsRequest::ReadVarRequest(payload))
+        send_receive_result!(models::JsRequest::ReadVarRequest(payload))
     }
 }
 
 /// Initializes the plugin.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("deno")
-        .invoke_handler(tauri::generate_handler![commands::call_function])
+        .invoke_handler(tauri::generate_handler![
+            commands::run_code,
+            commands::register_function,
+            commands::call_function,
+            commands::read_variable
+        ])
         .setup(|app, api| {
             start_deno_thread();
             #[cfg(mobile)]
@@ -117,7 +120,6 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         })
         .build()
 }
-
 
 impl deno_core::ModuleLoader for TsModuleLoader {
     fn resolve(
@@ -236,6 +238,7 @@ async fn call_js(
     js_runtime: &mut JsRuntime,
     js_fn: &v8::Global<v8::Function>,
 ) -> std::result::Result<String, CoreError> {
+    dbg!("calling");
     let v8_args = vec_to_v8_vec(args, js_runtime);
     let v8_result = js_runtime.call_with_args(js_fn, &v8_args).await?;
     Ok(v8_result
@@ -276,7 +279,10 @@ fn js_runtime_worker() {
     init_main_js(&mut js_runtime, &tokio_runtime);
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
 
-    let register_fn = |fn_name: String, js_runtime: &mut JsRuntime, fn_map: &mut HashMap<String, v8::Global<v8::Function>> | -> std::result::Result<String, CoreError> {
+    let register_fn = |fn_name: String,
+                       js_runtime: &mut JsRuntime,
+                       fn_map: &mut HashMap<String, v8::Global<v8::Function>>|
+     -> std::result::Result<String, CoreError> {
         let my_fn = get_fn(js_runtime, &fn_name);
         fn_map.insert(fn_name, my_fn);
         Ok("Ok".to_string())
@@ -288,26 +294,35 @@ fn js_runtime_worker() {
         vec![]
     };
     for function_name in js_allowed_fns {
-        register_fn(function_name.clone(), &mut js_runtime, &mut global_fns).expect(&format!("cannot register function {function_name}"));
+        register_fn(function_name.clone(), &mut js_runtime, &mut global_fns)
+            .expect(&format!("cannot register function {function_name}"));
     }
     loop {
-        let send_receive = SEND_RECEIVE.lock().unwrap();
-        if let Ok(received) = send_receive.1.recv() {
-          let result = match received {
-            JsRequest::RunCodeRequest(req) => exec_js(req.value, &mut js_runtime),
-            JsRequest::ReadVarRequest(req) => read_var(&req.value, &mut js_runtime),
-            JsRequest::RegisterRequest(req) => register_fn(req.function_name, &mut js_runtime, &mut global_fns),
-            JsRequest::CallFnRequest(req) => {
-              tokio_runtime
-                .block_on(call_js(req.args, &mut js_runtime, &global_fns[&req.function_name]))
-            },
-            _ => break,
-          };
-          let response = match result {
-            Ok(val) => val,
-            Err(err) => format!("error: {}", err.to_string())
-          };
-          let _ignore = send_receive.0.send(JsRequest::StringResponse(StringResponse { value: response }));
+      let mut rx = SEND_RECEIVE.1.resubscribe();
+        if let Ok(received) = rx.blocking_recv() {
+            dbg!("received");
+            let result = match received {
+                JsRequest::RunCodeRequest(req) => exec_js(req.value, &mut js_runtime),
+                JsRequest::ReadVarRequest(req) => read_var(&req.value, &mut js_runtime),
+                JsRequest::RegisterRequest(req) => {
+                    register_fn(req.function_name, &mut js_runtime, &mut global_fns)
+                }
+                JsRequest::CallFnRequest(req) => tokio_runtime.block_on(call_js(
+                    req.args,
+                    &mut js_runtime,
+                    &global_fns[&req.function_name],
+                )),
+                _ => break,
+            };
+            let response = match result {
+                Ok(val) => val,
+                Err(err) => format!("error: {}", err.to_string()),
+            };
+            let _ignore = SEND_RECEIVE
+                .0
+                .send(JsRequest::StringResponse(StringResponse {
+                    value: response,
+                }));
         }
     }
     println!("exit thread");

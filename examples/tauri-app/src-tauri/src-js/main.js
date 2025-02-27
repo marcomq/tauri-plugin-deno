@@ -1,9 +1,11 @@
-_tauri_plugin_functions = ["myFn"] 
+_tauri_plugin_functions = ["greet_js"];
 console.log("Js initialized");
 
-let myTest = "test ..."
+let myTest = "test ...";
+let counter = 0;
 
-function myFn() {
+function greet_js(input) {
+    counter += 1;
     console.log("Call Successfull!");
-    return "42"
+    return input + " from js (" + counter + ")";
 }

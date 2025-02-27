@@ -3,8 +3,8 @@
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/tauri-plugin-deno
 
-use serde::{ser::Serializer, Serialize};
 use crate::models;
+use serde::{ser::Serializer, Serialize};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -40,11 +40,8 @@ impl From<std::sync::mpsc::SendError<models::JsRequest>> for Error {
     }
 }
 
-
 impl From<std::sync::mpsc::RecvError> for Error {
     fn from(error: std::sync::mpsc::RecvError) -> Self {
         Error::String(error.to_string())
     }
 }
-
- 
