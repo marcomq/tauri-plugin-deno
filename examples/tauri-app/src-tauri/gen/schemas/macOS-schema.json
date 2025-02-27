@@ -1712,14 +1712,54 @@
           "const": "deno:default"
         },
         {
+          "description": "Enables the call_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:allow-call-function"
+        },
+        {
           "description": "Enables the ping command without any pre-configured scope.",
           "type": "string",
           "const": "deno:allow-ping"
         },
         {
+          "description": "Enables the read_variable command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:allow-read-variable"
+        },
+        {
+          "description": "Enables the register_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:allow-register-function"
+        },
+        {
+          "description": "Enables the run_code command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:allow-run-code"
+        },
+        {
+          "description": "Denies the call_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:deny-call-function"
+        },
+        {
           "description": "Denies the ping command without any pre-configured scope.",
           "type": "string",
           "const": "deno:deny-ping"
+        },
+        {
+          "description": "Denies the read_variable command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:deny-read-variable"
+        },
+        {
+          "description": "Denies the register_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:deny-register-function"
+        },
+        {
+          "description": "Denies the run_code command without any pre-configured scope.",
+          "type": "string",
+          "const": "deno:deny-run-code"
         }
       ]
     },

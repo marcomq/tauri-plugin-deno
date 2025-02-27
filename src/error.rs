@@ -45,3 +45,8 @@ impl From<std::sync::mpsc::RecvError> for Error {
         Error::String(error.to_string())
     }
 }
+impl From<tokio::sync::broadcast::error::SendError<models::JsRequest>> for Error {
+    fn from(error: tokio::sync::broadcast::error::SendError<models::JsRequest>) -> Self {
+        Error::String(error.to_string())
+    }
+}

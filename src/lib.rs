@@ -27,6 +27,7 @@ use tauri::{
     plugin::{Builder, TauriPlugin},
     Manager, Runtime,
 };
+use futures;
 
 #[cfg(desktop)]
 mod desktop;
@@ -70,11 +71,10 @@ pub trait DenoExt<R: Runtime> {
 
 macro_rules! send_receive_result {
     ($payload:expr) => {{
-        dbg!("send_receive_result");
-        dbg!("send_receive_result 2");
-        SEND_RECEIVE.0.send($payload);
+        SEND_RECEIVE.0.send($payload)?;
         let mut rx = SEND_RECEIVE.1.resubscribe();
-        if let Ok(JsRequest::StringResponse(result)) = rx.blocking_recv() {
+        let msg = futures::executor::block_on(async {rx.recv().await });
+        if let Ok(JsRequest::StringResponse(result)) = msg {
             Ok(result)
         } else {
             Err(Error::String("wrong response type".into()))
@@ -238,7 +238,6 @@ async fn call_js(
     js_runtime: &mut JsRuntime,
     js_fn: &v8::Global<v8::Function>,
 ) -> std::result::Result<String, CoreError> {
-    dbg!("calling");
     let v8_args = vec_to_v8_vec(args, js_runtime);
     let v8_result = js_runtime.call_with_args(js_fn, &v8_args).await?;
     Ok(v8_result
@@ -264,6 +263,39 @@ fn read_var(variable: &str, js_runtime: &mut JsRuntime) -> std::result::Result<S
         .to_rust_string_lossy(&mut js_runtime.handle_scope()))
 }
 
+async fn tokio_loop<F>(mut js_runtime: JsRuntime, mut global_fns: HashMap<String, v8::Global<v8::Function>>, register_fn: F)
+  where
+    F: Fn(String,  &mut JsRuntime, &mut HashMap<String, v8::Global<v8::Function>> )
+     -> std::result::Result<String, CoreError> {
+  loop {
+      let mut rx = SEND_RECEIVE.1.resubscribe();
+        if let Ok(received) = rx.recv().await {
+            let result = match received {
+                JsRequest::RunCodeRequest(req) => exec_js(req.value, &mut js_runtime),
+                JsRequest::ReadVarRequest(req) => read_var(&req.value, &mut js_runtime),
+                JsRequest::RegisterRequest(req) => {
+                    register_fn(req.function_name, &mut js_runtime, &mut global_fns)
+                }
+                JsRequest::CallFnRequest(req) => call_js(
+                    req.args,
+                    &mut js_runtime,
+                    &global_fns[&req.function_name],
+                ).await,
+                _ => break,
+            };
+            let response = match result {
+                Ok(val) => val,
+                Err(err) => format!("error: {}", err.to_string()),
+            };
+            let _ignore = SEND_RECEIVE
+                .0
+                .send(JsRequest::StringResponse(StringResponse {
+                    value: response,
+                }));
+        }
+    }
+}
+
 fn js_runtime_worker() {
     let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         module_loader: Some(Rc::new(TsModuleLoader)),
@@ -271,17 +303,18 @@ fn js_runtime_worker() {
         extensions: vec![runjs::init_ops()],
         ..Default::default()
     });
-    let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+    let tokio_runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
 
     init_main_js(&mut js_runtime, &tokio_runtime);
+
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
 
-    let register_fn = |fn_name: String,
+    let register_fn = | fn_name: String,
                        js_runtime: &mut JsRuntime,
-                       fn_map: &mut HashMap<String, v8::Global<v8::Function>>|
+                       fn_map: &mut HashMap<String, v8::Global<v8::Function>> |
      -> std::result::Result<String, CoreError> {
         let my_fn = get_fn(js_runtime, &fn_name);
         fn_map.insert(fn_name, my_fn);
@@ -297,34 +330,8 @@ fn js_runtime_worker() {
         register_fn(function_name.clone(), &mut js_runtime, &mut global_fns)
             .expect(&format!("cannot register function {function_name}"));
     }
-    loop {
-      let mut rx = SEND_RECEIVE.1.resubscribe();
-        if let Ok(received) = rx.blocking_recv() {
-            dbg!("received");
-            let result = match received {
-                JsRequest::RunCodeRequest(req) => exec_js(req.value, &mut js_runtime),
-                JsRequest::ReadVarRequest(req) => read_var(&req.value, &mut js_runtime),
-                JsRequest::RegisterRequest(req) => {
-                    register_fn(req.function_name, &mut js_runtime, &mut global_fns)
-                }
-                JsRequest::CallFnRequest(req) => tokio_runtime.block_on(call_js(
-                    req.args,
-                    &mut js_runtime,
-                    &global_fns[&req.function_name],
-                )),
-                _ => break,
-            };
-            let response = match result {
-                Ok(val) => val,
-                Err(err) => format!("error: {}", err.to_string()),
-            };
-            let _ignore = SEND_RECEIVE
-                .0
-                .send(JsRequest::StringResponse(StringResponse {
-                    value: response,
-                }));
-        }
-    }
+    tokio_runtime.block_on(tokio_loop(js_runtime, global_fns, register_fn));
+    
     println!("exit thread");
 }
 

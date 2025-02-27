@@ -295,6 +295,16 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the call_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-call-function"
+        },
+        {
+          "description": "Denies the call_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-call-function"
+        },
+        {
           "description": "Enables the ping command without any pre-configured scope.",
           "type": "string",
           "const": "allow-ping"
@@ -303,6 +313,36 @@
           "description": "Denies the ping command without any pre-configured scope.",
           "type": "string",
           "const": "deny-ping"
+        },
+        {
+          "description": "Enables the read_variable command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-variable"
+        },
+        {
+          "description": "Denies the read_variable command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-variable"
+        },
+        {
+          "description": "Enables the register_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-register-function"
+        },
+        {
+          "description": "Denies the register_function command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-register-function"
+        },
+        {
+          "description": "Enables the run_code command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-code"
+        },
+        {
+          "description": "Denies the run_code command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-code"
         },
         {
           "description": "Default permissions for the plugin",
