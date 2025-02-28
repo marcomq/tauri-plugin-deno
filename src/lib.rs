@@ -209,14 +209,13 @@ fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function>
     v8::Global::new(&mut scope, v8_val)
 }
 
-fn init_main_js(js_runtime: &mut JsRuntime, tokio_runtime: &tokio::runtime::Runtime) {
+async fn init_main_js(js_runtime: &mut JsRuntime,) {
     let file_path = "src-js/main.js";
     let code = std::fs::read_to_string(file_path).unwrap_or_default();
 
     let _res = js_runtime.execute_script(file_path, code.clone()).unwrap();
 
-    let _val = tokio_runtime
-        .block_on(js_runtime.run_event_loop(Default::default()))
+    js_runtime.run_event_loop(Default::default()).await
         .expect("Error initializing main.js");
 }
 
@@ -233,7 +232,7 @@ fn vec_to_v8_vec(my_vec: Vec<JsMany>, js_runtime: &mut JsRuntime) -> Vec<v8::Glo
 }
 
 /// Call given javascript function and return result
-async fn call_js(
+async fn deno_call_js(
     args: Vec<JsMany>,
     js_runtime: &mut JsRuntime,
     js_fn: &v8::Global<v8::Function>,
@@ -246,7 +245,7 @@ async fn call_js(
 }
 
 /// Execute given javascript without any preprocessing
-fn exec_js(code: String, js_runtime: &mut JsRuntime) -> std::result::Result<String, CoreError> {
+fn deno_exec_js(code: String, js_runtime: &mut JsRuntime) -> std::result::Result<String, CoreError> {
     let my_var = js_runtime.execute_script("()", code).unwrap();
     Ok(my_var
         .open(js_runtime.v8_isolate())
@@ -255,7 +254,7 @@ fn exec_js(code: String, js_runtime: &mut JsRuntime) -> std::result::Result<Stri
 
 /// Executes given javascripts and returns value - used here just to read variable.
 /// Replaces some characters to reduce risk of unwanted code execution
-fn read_var(variable: &str, js_runtime: &mut JsRuntime) -> std::result::Result<String, CoreError> {
+fn deno_read_var(variable: &str, js_runtime: &mut JsRuntime) -> std::result::Result<String, CoreError> {
     let variable = variable.replace(&['(', ')', '\"', ';', '\''][..], ""); // replace chars to avoid function call
     let my_var = js_runtime.execute_script("()", variable).unwrap();
     Ok(my_var
@@ -263,20 +262,17 @@ fn read_var(variable: &str, js_runtime: &mut JsRuntime) -> std::result::Result<S
         .to_rust_string_lossy(&mut js_runtime.handle_scope()))
 }
 
-async fn tokio_loop<F>(mut js_runtime: JsRuntime, mut global_fns: HashMap<String, v8::Global<v8::Function>>, register_fn: F)
-  where
-    F: Fn(String,  &mut JsRuntime, &mut HashMap<String, v8::Global<v8::Function>> )
-     -> std::result::Result<String, CoreError> {
+async fn deno_tokio_loop(mut js_runtime: JsRuntime, mut global_fns: HashMap<String, v8::Global<v8::Function>>) {
   loop {
       let mut rx = SEND_RECEIVE.1.resubscribe();
         if let Ok(received) = rx.recv().await {
             let result = match received {
-                JsRequest::RunCodeRequest(req) => exec_js(req.value, &mut js_runtime),
-                JsRequest::ReadVarRequest(req) => read_var(&req.value, &mut js_runtime),
+                JsRequest::RunCodeRequest(req) => deno_exec_js(req.value, &mut js_runtime),
+                JsRequest::ReadVarRequest(req) => deno_read_var(&req.value, &mut js_runtime),
                 JsRequest::RegisterRequest(req) => {
                     register_fn(req.function_name, &mut js_runtime, &mut global_fns)
                 }
-                JsRequest::CallFnRequest(req) => call_js(
+                JsRequest::CallFnRequest(req) => deno_call_js(
                     req.args,
                     &mut js_runtime,
                     &global_fns[&req.function_name],
@@ -296,6 +292,14 @@ async fn tokio_loop<F>(mut js_runtime: JsRuntime, mut global_fns: HashMap<String
     }
 }
 
+fn register_fn(fn_name: String,
+    js_runtime: &mut JsRuntime,
+    fn_map: &mut HashMap<String, v8::Global<v8::Function>> ) -> std::result::Result<String, CoreError> {
+        let my_fn = get_fn(js_runtime, &fn_name);
+        fn_map.insert(fn_name, my_fn);
+        Ok("Ok".to_string())
+    }
+
 fn js_runtime_worker() {
     let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         module_loader: Some(Rc::new(TsModuleLoader)),
@@ -308,20 +312,11 @@ fn js_runtime_worker() {
         .build()
         .unwrap();
 
-    init_main_js(&mut js_runtime, &tokio_runtime);
+    tokio_runtime.block_on(init_main_js(&mut js_runtime));
 
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
 
-    let register_fn = | fn_name: String,
-                       js_runtime: &mut JsRuntime,
-                       fn_map: &mut HashMap<String, v8::Global<v8::Function>> |
-     -> std::result::Result<String, CoreError> {
-        let my_fn = get_fn(js_runtime, &fn_name);
-        fn_map.insert(fn_name, my_fn);
-        Ok("Ok".to_string())
-    };
-
-    let js_allowed_fns = if let Ok(fn_s) = read_var("_tauri_plugin_functions", &mut js_runtime) {
+    let js_allowed_fns = if let Ok(fn_s) = deno_read_var("_tauri_plugin_functions", &mut js_runtime) {
         fn_s.split(",").map(str::to_string).collect() // array to string conversion doesn't work yet in read_var
     } else {
         vec![]
@@ -330,7 +325,7 @@ fn js_runtime_worker() {
         register_fn(function_name.clone(), &mut js_runtime, &mut global_fns)
             .expect(&format!("cannot register function {function_name}"));
     }
-    tokio_runtime.block_on(tokio_loop(js_runtime, global_fns, register_fn));
+    tokio_runtime.block_on(deno_tokio_loop(js_runtime, global_fns));
     
     println!("exit thread");
 }

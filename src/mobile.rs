@@ -27,12 +27,6 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 }
 
 /// Access to the deno APIs.
+/// 
 pub struct Deno<R: Runtime>(PluginHandle<R>);
 
-impl<R: Runtime> Deno<R> {
-    pub fn ping(&self, payload: PingRequest) -> crate::Result<PingResponse> {
-        self.0
-            .run_mobile_plugin("ping", payload)
-            .map_err(Into::into)
-    }
-}
