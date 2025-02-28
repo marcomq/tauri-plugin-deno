@@ -19,15 +19,12 @@ pub use models::*;
 use std::collections::HashMap;
 use std::env;
 use std::rc::Rc;
-use std::sync::LazyLock;
 use std::thread;
 use std::vec;
-use tokio::sync::broadcast;
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Manager, Runtime,
 };
-use futures;
 
 #[cfg(desktop)]
 mod desktop;
@@ -52,51 +49,17 @@ async fn op_set_timeout(delay: f64) {
 
 struct TsModuleLoader;
 
-  static SEND_RECEIVE: LazyLock<(broadcast::Sender<JsRequest>, broadcast::Receiver<JsRequest>)> =
-      LazyLock::new(|| broadcast::channel(1000));
-
-
-
 static RUNTIME_SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/RUNJS_SNAPSHOT.bin"));
 extension!(runjs, ops = [op_set_timeout,]);
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the deno APIs.
 pub trait DenoExt<R: Runtime> {
     fn deno(&self) -> &Deno<R>;
-    fn run_code(&self, payload: RunCodeRequest) -> crate::Result<StringResponse>;
-    fn register_function(&self, payload: RegisterRequest) -> crate::Result<StringResponse>;
-    fn call_function(&self, payload: CallFnRequest) -> crate::Result<StringResponse>;
-    fn read_variable(&self, payload: ReadVarRequest) -> crate::Result<StringResponse>;
-}
-
-macro_rules! send_receive_result {
-    ($payload:expr) => {{
-        SEND_RECEIVE.0.send($payload)?;
-        let mut rx = SEND_RECEIVE.1.resubscribe();
-        let msg = futures::executor::block_on(async {rx.recv().await });
-        if let Ok(JsRequest::StringResponse(result)) = msg {
-            Ok(result)
-        } else {
-            Err(Error::String("wrong response type".into()))
-        }
-    }};
 }
 
 impl<R: Runtime, T: Manager<R>> crate::DenoExt<R> for T {
     fn deno(&self) -> &Deno<R> {
         self.state::<Deno<R>>().inner()
-    }
-    fn run_code(&self, payload: RunCodeRequest) -> crate::Result<StringResponse> {
-        send_receive_result!(models::JsRequest::RunCodeRequest(payload))
-    }
-    fn register_function(&self, payload: RegisterRequest) -> crate::Result<StringResponse> {
-        send_receive_result!(models::JsRequest::RegisterRequest(payload))
-    }
-    fn call_function(&self, payload: CallFnRequest) -> crate::Result<StringResponse> {
-        send_receive_result!(models::JsRequest::CallFnRequest(payload))
-    }
-    fn read_variable(&self, payload: ReadVarRequest) -> crate::Result<StringResponse> {
-        send_receive_result!(models::JsRequest::ReadVarRequest(payload))
     }
 }
 
@@ -110,12 +73,14 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::read_variable
         ])
         .setup(|app, api| {
-            start_deno_thread();
             #[cfg(mobile)]
             let deno = mobile::init(app, api)?;
             #[cfg(desktop)]
             let deno = desktop::init(app, api)?;
             app.manage(deno);
+            let channels = Channels::new();
+            app.manage(channels.ui);
+            start_deno_thread(channels.deno);
             Ok(())
         })
         .build()
@@ -209,13 +174,15 @@ fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function>
     v8::Global::new(&mut scope, v8_val)
 }
 
-async fn init_main_js(js_runtime: &mut JsRuntime,) {
+async fn init_main_js(js_runtime: &mut JsRuntime) {
     let file_path = "src-js/main.js";
     let code = std::fs::read_to_string(file_path).unwrap_or_default();
 
     let _res = js_runtime.execute_script(file_path, code.clone()).unwrap();
 
-    js_runtime.run_event_loop(Default::default()).await
+    js_runtime
+        .run_event_loop(Default::default())
+        .await
         .expect("Error initializing main.js");
 }
 
@@ -245,7 +212,10 @@ async fn deno_call_js(
 }
 
 /// Execute given javascript without any preprocessing
-fn deno_exec_js(code: String, js_runtime: &mut JsRuntime) -> std::result::Result<String, CoreError> {
+fn deno_exec_js(
+    code: String,
+    js_runtime: &mut JsRuntime,
+) -> std::result::Result<String, CoreError> {
     let my_var = js_runtime.execute_script("()", code).unwrap();
     Ok(my_var
         .open(js_runtime.v8_isolate())
@@ -254,7 +224,10 @@ fn deno_exec_js(code: String, js_runtime: &mut JsRuntime) -> std::result::Result
 
 /// Executes given javascripts and returns value - used here just to read variable.
 /// Replaces some characters to reduce risk of unwanted code execution
-fn deno_read_var(variable: &str, js_runtime: &mut JsRuntime) -> std::result::Result<String, CoreError> {
+fn deno_read_var(
+    variable: &str,
+    js_runtime: &mut JsRuntime,
+) -> std::result::Result<String, CoreError> {
     let variable = variable.replace(&['(', ')', '\"', ';', '\''][..], ""); // replace chars to avoid function call
     let my_var = js_runtime.execute_script("()", variable).unwrap();
     Ok(my_var
@@ -262,45 +235,51 @@ fn deno_read_var(variable: &str, js_runtime: &mut JsRuntime) -> std::result::Res
         .to_rust_string_lossy(&mut js_runtime.handle_scope()))
 }
 
-async fn deno_tokio_loop(mut js_runtime: JsRuntime, mut global_fns: HashMap<String, v8::Global<v8::Function>>) {
-  loop {
-      let mut rx = SEND_RECEIVE.1.resubscribe();
-        if let Ok(received) = rx.recv().await {
+async fn deno_tokio_loop(
+    mut js_runtime: JsRuntime,
+    mut global_fns: HashMap<String, v8::Global<v8::Function>>,
+    send_receive: DenoChannel,
+) {
+    loop {
+        let mut locked_tx_rx = send_receive.lock().await;
+        let msg = locked_tx_rx.rx.recv().await;
+        drop(locked_tx_rx);
+        if let Some(received) = msg {
             let result = match received {
                 JsRequest::RunCodeRequest(req) => deno_exec_js(req.value, &mut js_runtime),
                 JsRequest::ReadVarRequest(req) => deno_read_var(&req.value, &mut js_runtime),
                 JsRequest::RegisterRequest(req) => {
                     register_fn(req.function_name, &mut js_runtime, &mut global_fns)
                 }
-                JsRequest::CallFnRequest(req) => deno_call_js(
-                    req.args,
-                    &mut js_runtime,
-                    &global_fns[&req.function_name],
-                ).await,
-                _ => break,
+                JsRequest::CallFnRequest(req) => {
+                    deno_call_js(req.args, &mut js_runtime, &global_fns[&req.function_name]).await
+                }
             };
             let response = match result {
                 Ok(val) => val,
                 Err(err) => format!("error: {}", err.to_string()),
             };
-            let _ignore = SEND_RECEIVE
-                .0
-                .send(JsRequest::StringResponse(StringResponse {
-                    value: response,
-                }));
+
+            let locked_tx_rx = send_receive.lock().await;
+            let _ignore = locked_tx_rx
+                .tx
+                .send(StringResponse { value: response })
+                .await;
         }
     }
 }
 
-fn register_fn(fn_name: String,
+fn register_fn(
+    fn_name: String,
     js_runtime: &mut JsRuntime,
-    fn_map: &mut HashMap<String, v8::Global<v8::Function>> ) -> std::result::Result<String, CoreError> {
-        let my_fn = get_fn(js_runtime, &fn_name);
-        fn_map.insert(fn_name, my_fn);
-        Ok("Ok".to_string())
-    }
+    fn_map: &mut HashMap<String, v8::Global<v8::Function>>,
+) -> std::result::Result<String, CoreError> {
+    let my_fn = get_fn(js_runtime, &fn_name);
+    fn_map.insert(fn_name, my_fn);
+    Ok("Ok".to_string())
+}
 
-fn js_runtime_worker() {
+fn js_runtime_worker(deno_channel: DenoChannel) {
     let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         module_loader: Some(Rc::new(TsModuleLoader)),
         startup_snapshot: Some(RUNTIME_SNAPSHOT),
@@ -316,7 +295,8 @@ fn js_runtime_worker() {
 
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
 
-    let js_allowed_fns = if let Ok(fn_s) = deno_read_var("_tauri_plugin_functions", &mut js_runtime) {
+    let js_allowed_fns = if let Ok(fn_s) = deno_read_var("_tauri_plugin_functions", &mut js_runtime)
+    {
         fn_s.split(",").map(str::to_string).collect() // array to string conversion doesn't work yet in read_var
     } else {
         vec![]
@@ -325,11 +305,11 @@ fn js_runtime_worker() {
         register_fn(function_name.clone(), &mut js_runtime, &mut global_fns)
             .expect(&format!("cannot register function {function_name}"));
     }
-    tokio_runtime.block_on(deno_tokio_loop(js_runtime, global_fns));
-    
+    tokio_runtime.block_on(deno_tokio_loop(js_runtime, global_fns, deno_channel));
+
     println!("exit thread");
 }
 
-fn start_deno_thread() {
-    let _detached = thread::spawn(js_runtime_worker);
+fn start_deno_thread(deno_channel: DenoChannel) {
+    let _detached = thread::spawn(move || js_runtime_worker(deno_channel));
 }

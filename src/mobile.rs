@@ -27,6 +27,5 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 }
 
 /// Access to the deno APIs.
-/// 
+///
 pub struct Deno<R: Runtime>(PluginHandle<R>);
-

@@ -4,14 +4,14 @@
 //  git clone https://github.com/marcomq/tauri-plugin-deno
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, Mutex};
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize)]
 pub enum JsRequest {
     RegisterRequest(RegisterRequest),
     CallFnRequest(CallFnRequest),
     RunCodeRequest(RunCodeRequest),
     ReadVarRequest(ReadVarRequest),
-    StringResponse(StringResponse),
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -44,15 +44,45 @@ pub struct RegisterRequest {
     pub number_of_args: Option<u8>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallFnRequest {
     pub function_name: String,
     pub args: Vec<JsMany>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StringResponse {
     pub value: String,
+}
+
+pub struct SendReceive<T, R> {
+    pub tx: mpsc::Sender<T>,
+    pub rx: mpsc::Receiver<R>,
+}
+
+pub type UiChannel = Mutex<SendReceive<JsRequest, StringResponse>>;
+pub type DenoChannel = Mutex<SendReceive<StringResponse, JsRequest>>;
+
+pub struct Channels {
+    pub ui: UiChannel,     // to deno, from deno
+    pub deno: DenoChannel, // to ui, from ui,
+}
+
+impl Channels {
+    pub fn new() -> Channels {
+        let (tx_to_deno, rx_from_ui) = mpsc::channel(1000);
+        let (tx_to_ui, rx_from_deno) = mpsc::channel(1000);
+        Channels {
+            ui: Mutex::new(SendReceive {
+                tx: tx_to_deno,
+                rx: rx_from_deno,
+            }),
+            deno: Mutex::new(SendReceive {
+                tx: tx_to_ui,
+                rx: rx_from_ui,
+            }),
+        }
+    }
 }
