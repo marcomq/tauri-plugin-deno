@@ -12,10 +12,11 @@ use tauri::{command, AppHandle, Runtime};
 macro_rules! send_receive_result {
     ($app:expr, $payload:expr) => {{
         let channel_state = $app.state::<UiChannel>();
-        let channel = channel_state.lock().await;
-        channel.tx.send($payload).await.unwrap();
-        drop(channel);
         let mut channel = channel_state.lock().await;
+        channel.tx.send($payload).await.unwrap();
+        // TODO: create new channel, embed sender to message and receive that
+        // drop(channel);
+        // let mut channel = channel_state.lock().await;
         Ok(channel.rx.recv().await.unwrap())
     }};
 }
