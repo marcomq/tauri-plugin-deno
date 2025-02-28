@@ -42,32 +42,6 @@ Denies the call_function command without any pre-configured scope.
 <tr>
 <td>
 
-`deno:allow-ping`
-
-</td>
-<td>
-
-Enables the ping command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`deno:deny-ping`
-
-</td>
-<td>
-
-Denies the ping command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
 `deno:allow-read-variable`
 
 </td>
