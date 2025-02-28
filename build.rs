@@ -1,3 +1,8 @@
+//  Tauri Plugin Deno
+//  © Copyright 2025, by Marco Mengelkoch
+//  Licensed under MIT License, see License file for more details
+//  git clone https://github.com/marcomq/tauri-plugin-deno
+
 const COMMANDS: &[&str] = &[
     "run_code",
     "register_function",

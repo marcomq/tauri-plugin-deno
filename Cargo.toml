@@ -12,15 +12,15 @@ homepage = "https://github.com/marcomq/tauri-plugin-deno"
 repository = "https://github.com/marcomq/tauri-plugin-deno"
 
 [dependencies]
-tauri = { version = "2.2.4" }
+tauri = { version = "2" }
 serde = "1.0"
 thiserror = "2"
 
-deno_core = "0.339.0"
+deno_core = "0.339"
 deno_ast = { version = "0.45.1", features = ["transpiling"] }
 deno_error = "0.5.6"
 reqwest = "0.12"
 tokio = { version = "1.43.0", features = ["full"] }
 
 [build-dependencies]
-tauri-plugin = { version = "2.0.3", features = ["build"] }
+tauri-plugin = { version = "2", features = ["build"] }
