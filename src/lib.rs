@@ -248,7 +248,7 @@ fn deno_read_var(
     variable: &str,
     js_runtime: &mut JsRuntime,
 ) -> std::result::Result<String, CoreError> {
-    let variable = variable.replace(&['(', ')', '\"', ';', '\''][..], ""); // replace chars to avoid function call
+    let variable = variable.replace(&['(', ')', '\"', ';', '\'', '=', ':'][..], ""); // replace chars to avoid function call
     let my_var = js_runtime.execute_script("()", variable).unwrap();
     Ok(my_var
         .open(js_runtime.v8_isolate())

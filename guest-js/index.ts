@@ -43,7 +43,7 @@ export async function registerFunction(
 }
 
 /** 
- * No server invokation - assumes that function has already been registered server-side
+ * No server invocation - assumes that function has already been registered server-side
  * Makes function available as `call.{jsFunctionName}`
  *  @param {string} denoFunctionCall - The deno js function call
  *  @param {string} [jsFunctionName] - Name that is used in javascript: "call.jsFunctionName". Must not contain dots.
