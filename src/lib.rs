@@ -17,7 +17,6 @@ use deno_core::ModuleSourceCode;
 use deno_error::JsErrorBox;
 pub use models::*;
 use std::collections::HashMap;
-use std::env;
 use std::rc::Rc;
 use std::thread;
 use std::vec;
@@ -49,7 +48,26 @@ async fn op_set_timeout(delay: f64) {
 
 struct TsModuleLoader;
 
-static RUNTIME_SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/RUNJS_SNAPSHOT.bin"));
+const DENO_RUNTIME: &str = r#"
+const { core } = Deno;
+
+function argsToMessage(...args) {
+  return args.map((arg) => JSON.stringify(arg)).join(" ");
+}
+
+globalThis.console = {
+  log: (...args) => {
+    core.print(`[out]: ${argsToMessage(...args)}\n`, false);
+  },
+  error: (...args) => {
+    core.print(`[err]: ${argsToMessage(...args)}\n`, true);
+  },
+};
+
+globalThis.setTimeout = async (callback, delay) => {
+  core.ops.op_set_timeout(delay).then(callback);
+};
+"#;
 extension!(runjs, ops = [op_set_timeout,]);
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the deno APIs.
@@ -175,6 +193,8 @@ fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function>
 }
 
 async fn init_main_js(js_runtime: &mut JsRuntime) {
+
+    let _res = js_runtime.execute_script("()", DENO_RUNTIME).unwrap();
     let file_path = "src-js/main.js";
     let code = std::fs::read_to_string(file_path).unwrap_or_default();
 
@@ -282,7 +302,6 @@ fn register_fn(
 fn js_runtime_worker(deno_channel: DenoChannel) {
     let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         module_loader: Some(Rc::new(TsModuleLoader)),
-        startup_snapshot: Some(RUNTIME_SNAPSHOT),
         extensions: vec![runjs::init_ops()],
         ..Default::default()
     });
