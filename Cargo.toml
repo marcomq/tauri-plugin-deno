@@ -2,7 +2,7 @@
 name = "tauri-plugin-deno"
 version = "0.1.0"
 authors = [ "Marco Mengelkoch" ]
-description = ""
+description = "A tauri 2 plugin to use javascript code (deno) in the backend."
 edition = "2021"
 rust-version = "1.77.2"
 exclude = ["/examples", "/dist-js", "/guest-js",  "/webview-dist", "/webview-src", "/node_modules"]
