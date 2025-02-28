@@ -13,5 +13,6 @@ yarn.lock
 Cargo.lock
 node_modules/
 
+!dist-js/*.iife.js
 dist-js
 dist
