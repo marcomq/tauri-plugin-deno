@@ -4,7 +4,7 @@
 //  git clone https://github.com/marcomq/tauri-plugin-deno
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 #[derive(Deserialize, Serialize)]
 pub enum JsRequest {
@@ -57,32 +57,9 @@ pub struct StringResponse {
     pub value: String,
 }
 
-pub struct SendReceive<T, R> {
-    pub tx: mpsc::Sender<T>,
-    pub rx: mpsc::Receiver<R>,
+pub struct JsMsg {
+    pub req: JsRequest,
+    pub responder: oneshot::Sender<String>,
 }
 
-pub type UiChannel = Mutex<SendReceive<JsRequest, StringResponse>>;
-pub type DenoChannel = Mutex<SendReceive<StringResponse, JsRequest>>;
-
-pub struct Channels {
-    pub ui: UiChannel,     // to deno, from deno
-    pub deno: DenoChannel, // to ui, from ui,
-}
-
-impl Channels {
-    pub fn new() -> Channels {
-        let (tx_to_deno, rx_from_ui) = mpsc::channel(1000);
-        let (tx_to_ui, rx_from_deno) = mpsc::channel(1000);
-        Channels {
-            ui: Mutex::new(SendReceive {
-                tx: tx_to_deno,
-                rx: rx_from_deno,
-            }),
-            deno: Mutex::new(SendReceive {
-                tx: tx_to_ui,
-                rx: rx_from_ui,
-            }),
-        }
-    }
-}
+pub type UiSender = Mutex<mpsc::Sender<JsMsg>>;

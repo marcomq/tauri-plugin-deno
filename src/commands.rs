@@ -5,19 +5,27 @@
 
 use crate::models::*;
 use crate::Result;
-use crate::UiChannel;
+use crate::UiSender;
 use tauri::Manager;
 use tauri::{command, AppHandle, Runtime};
+use tokio::sync::oneshot;
 
 macro_rules! send_receive_result {
     ($app:expr, $payload:expr) => {{
-        let channel_state = $app.state::<UiChannel>();
-        let mut channel = channel_state.lock().await;
-        channel.tx.send($payload).await.unwrap();
-        // TODO: create new channel, embed sender to message and receive that
-        // drop(channel);
-        // let mut channel = channel_state.lock().await;
-        Ok(channel.rx.recv().await.unwrap())
+        let (responder, receiver) = oneshot::channel::<String>();
+        let sender_state = $app.state::<UiSender>();
+        let locked_tx = sender_state.lock().await;
+        locked_tx
+            .send(JsMsg {
+                req: $payload,
+                responder,
+            })
+            .await
+            .unwrap();
+        drop(locked_tx);
+        Ok(StringResponse {
+            value: receiver.await.unwrap_or_default(),
+        })
     }};
 }
 

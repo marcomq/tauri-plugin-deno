@@ -24,6 +24,8 @@ use tauri::{
     plugin::{Builder, TauriPlugin},
     Manager, Runtime,
 };
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 #[cfg(desktop)]
 mod desktop;
@@ -96,9 +98,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             #[cfg(desktop)]
             let deno = desktop::init(app, api)?;
             app.manage(deno);
-            let channels = Channels::new();
-            app.manage(channels.ui);
-            start_deno_thread(channels.deno);
+            let (tx, rx) = mpsc::channel(1000);
+            app.manage(Mutex::new(tx));
+            start_deno_thread(rx);
             Ok(())
         })
         .build()
@@ -193,7 +195,6 @@ fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function>
 }
 
 async fn init_main_js(js_runtime: &mut JsRuntime) {
-
     let _res = js_runtime.execute_script("()", DENO_RUNTIME).unwrap();
     let file_path = "src-js/main.js";
     let code = std::fs::read_to_string(file_path).unwrap_or_default();
@@ -258,14 +259,12 @@ fn deno_read_var(
 async fn deno_tokio_loop(
     mut js_runtime: JsRuntime,
     mut global_fns: HashMap<String, v8::Global<v8::Function>>,
-    send_receive: DenoChannel,
+    mut rx: mpsc::Receiver<JsMsg>,
 ) {
     loop {
-        let mut locked_tx_rx = send_receive.lock().await;
-        let msg = locked_tx_rx.rx.recv().await;
-        drop(locked_tx_rx);
+        let msg = rx.recv().await;
         if let Some(received) = msg {
-            let result = match received {
+            let result = match received.req {
                 JsRequest::RunCodeRequest(req) => deno_exec_js(req.value, &mut js_runtime),
                 JsRequest::ReadVarRequest(req) => deno_read_var(&req.value, &mut js_runtime),
                 JsRequest::RegisterRequest(req) => {
@@ -280,11 +279,7 @@ async fn deno_tokio_loop(
                 Err(err) => format!("error: {}", err.to_string()),
             };
 
-            let locked_tx_rx = send_receive.lock().await;
-            let _ignore = locked_tx_rx
-                .tx
-                .send(StringResponse { value: response })
-                .await;
+            let _ignore = received.responder.send(response);
         }
     }
 }
@@ -299,7 +294,7 @@ fn register_fn(
     Ok("Ok".to_string())
 }
 
-fn js_runtime_worker(deno_channel: DenoChannel) {
+fn js_runtime_worker(rx: mpsc::Receiver<JsMsg>) {
     let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         module_loader: Some(Rc::new(TsModuleLoader)),
         extensions: vec![runjs::init_ops()],
@@ -324,11 +319,11 @@ fn js_runtime_worker(deno_channel: DenoChannel) {
         register_fn(function_name.clone(), &mut js_runtime, &mut global_fns)
             .expect(&format!("cannot register function {function_name}"));
     }
-    tokio_runtime.block_on(deno_tokio_loop(js_runtime, global_fns, deno_channel));
+    tokio_runtime.block_on(deno_tokio_loop(js_runtime, global_fns, rx));
 
     println!("exit thread");
 }
 
-fn start_deno_thread(deno_channel: DenoChannel) {
-    let _detached = thread::spawn(move || js_runtime_worker(deno_channel));
+fn start_deno_thread(rx: mpsc::Receiver<JsMsg>) {
+    let _detached = thread::spawn(move || js_runtime_worker(rx));
 }
