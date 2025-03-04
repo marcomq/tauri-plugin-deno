@@ -11,6 +11,15 @@ your typescript into main.js first - for example by using `rollup`.
 This plugin is in an early state. It might still have some issues. I currently only tested it on MacOS and did not optimize it yet for release builds.
 There might be changes later, for example to auto include backend javascript.
 
+Planned changes:
+- make sure that ops like writing & reading files work as expected
+- try to use all (or nearly all) Deno ops, for example https://github.com/denoland/deno/blob/main/ext/fs/ops.rs
+- try to use tauri permissions for ops
+- make sure that windows & linux production binaries are working fine
+- try to compile backend js into production binary without additional resource
+- try to also call fronted functions from backend
+- check if Android and iOS support can be added easily
+- implement tests & github workflows
 
 ## Usage
 

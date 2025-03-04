@@ -6,15 +6,9 @@
 use deno_ast::MediaType;
 use deno_ast::ParseParams;
 use deno_core::error::CoreError;
-use deno_core::error::ModuleLoaderError;
-use deno_core::extension;
-use deno_core::op2;
 use deno_core::serde_v8;
 use deno_core::v8;
 use deno_core::JsRuntime;
-use deno_core::ModuleLoadResponse;
-use deno_core::ModuleSourceCode;
-use deno_error::JsErrorBox;
 pub use models::*;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,8 +27,10 @@ mod desktop;
 mod mobile;
 
 mod commands;
+mod deno_ops;
 mod error;
 mod models;
+use deno_ops::*;
 
 pub use error::{Error, Result};
 
@@ -42,35 +38,6 @@ pub use error::{Error, Result};
 use desktop::Deno;
 #[cfg(mobile)]
 use mobile::Deno;
-
-#[op2(async)]
-async fn op_set_timeout(delay: f64) {
-    tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-}
-
-struct TsModuleLoader;
-
-const DENO_RUNTIME: &str = r#"
-const { core } = Deno;
-
-function argsToMessage(...args) {
-  return args.map((arg) => JSON.stringify(arg)).join(" ");
-}
-
-globalThis.console = {
-  log: (...args) => {
-    core.print(`[out]: ${argsToMessage(...args)}\n`, false);
-  },
-  error: (...args) => {
-    core.print(`[err]: ${argsToMessage(...args)}\n`, true);
-  },
-};
-
-globalThis.setTimeout = async (callback, delay) => {
-  core.ops.op_set_timeout(delay).then(callback);
-};
-"#;
-extension!(runjs, ops = [op_set_timeout,]);
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the deno APIs.
 pub trait DenoExt<R: Runtime> {
@@ -106,81 +73,6 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .build()
 }
 
-impl deno_core::ModuleLoader for TsModuleLoader {
-    fn resolve(
-        &self,
-        specifier: &str,
-        referrer: &str,
-        _kind: deno_core::ResolutionKind,
-    ) -> std::result::Result<deno_core::ModuleSpecifier, ModuleLoaderError> {
-        deno_core::resolve_import(specifier, referrer).map_err(Into::into)
-    }
-
-    fn load(
-        &self,
-        module_specifier: &deno_core::ModuleSpecifier,
-        _maybe_referrer: Option<&reqwest::Url>,
-        _is_dyn_import: bool,
-        _requested_module_type: deno_core::RequestedModuleType,
-    ) -> ModuleLoadResponse {
-        let module_specifier = module_specifier.clone();
-
-        let module_load = move || {
-            let path = module_specifier.to_file_path().unwrap();
-
-            let media_type = MediaType::from_path(&path);
-            let (module_type, should_transpile) = match MediaType::from_path(&path) {
-                MediaType::JavaScript | MediaType::Mjs | MediaType::Cjs => {
-                    (deno_core::ModuleType::JavaScript, false)
-                }
-                MediaType::Jsx => (deno_core::ModuleType::JavaScript, true),
-                MediaType::TypeScript
-                | MediaType::Mts
-                | MediaType::Cts
-                | MediaType::Dts
-                | MediaType::Dmts
-                | MediaType::Dcts
-                | MediaType::Tsx => (deno_core::ModuleType::JavaScript, true),
-                MediaType::Json => (deno_core::ModuleType::Json, false),
-                _ => panic!("Unknown extension {:?}", path.extension()),
-            };
-
-            let code = std::fs::read_to_string(&path)?;
-            let code = if should_transpile {
-                let parsed = deno_ast::parse_module(ParseParams {
-                    specifier: module_specifier.clone(),
-                    text: code.into(),
-                    media_type,
-                    capture_tokens: false,
-                    scope_analysis: false,
-                    maybe_syntax: None,
-                })
-                .map_err(JsErrorBox::from_err)?;
-                parsed
-                    .transpile(
-                        &Default::default(),
-                        &Default::default(),
-                        &Default::default(),
-                    )
-                    .map_err(JsErrorBox::from_err)?
-                    .into_source()
-                    .text
-            } else {
-                code
-            };
-            let module = deno_core::ModuleSource::new(
-                module_type,
-                ModuleSourceCode::String(code.into()),
-                &module_specifier,
-                None,
-            );
-            Ok(module)
-        };
-
-        ModuleLoadResponse::Sync(module_load())
-    }
-}
-
 fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function> {
     let deno_ctx = js_runtime.main_context();
     let ctx = deno_ctx.open(js_runtime.v8_isolate());
@@ -192,19 +84,6 @@ fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function>
         .expect("missing function");
     let v8_val = v8::Local::<v8::Function>::try_from(val).expect("function expected");
     v8::Global::new(&mut scope, v8_val)
-}
-
-async fn init_main_js(js_runtime: &mut JsRuntime) {
-    let _res = js_runtime.execute_script("()", DENO_RUNTIME).unwrap();
-    let file_path = "src-js/main.js";
-    let code = std::fs::read_to_string(file_path).unwrap_or_default();
-
-    let _res = js_runtime.execute_script(file_path, code.clone()).unwrap();
-
-    js_runtime
-        .run_event_loop(Default::default())
-        .await
-        .expect("Error initializing main.js");
 }
 
 fn vec_to_v8_vec(my_vec: Vec<JsMany>, js_runtime: &mut JsRuntime) -> Vec<v8::Global<v8::Value>> {
@@ -237,7 +116,7 @@ fn deno_exec_js(
     code: String,
     js_runtime: &mut JsRuntime,
 ) -> std::result::Result<String, CoreError> {
-    let my_var = js_runtime.execute_script("()", code).unwrap();
+    let my_var = js_runtime.execute_script("ext:<anon>", code).unwrap();
     Ok(my_var
         .open(js_runtime.v8_isolate())
         .to_rust_string_lossy(&mut js_runtime.handle_scope()))
@@ -294,10 +173,57 @@ fn register_fn(
     Ok("Ok".to_string())
 }
 
+deno_core::extension!(
+    runjs,
+    ops = [
+        op_set_timeout,
+        op_read_file,
+        op_write_file,
+        op_read_file_sync,
+        op_write_file_sync,
+        op_fetch,
+        op_remove_file,
+    ]
+);
+
+
+async fn init_main_js(js_runtime: &mut JsRuntime) {
+    let file_path = "src-js/main.js";
+    let code = std::fs::read_to_string(file_path).unwrap_or_default();
+    let parsed = deno_ast::parse_module(ParseParams {
+        specifier: deno_core::ModuleSpecifier::parse(&format!("file:///{file_path}")).unwrap(),
+        text: code.into(),
+        media_type: MediaType::TypeScript,
+        capture_tokens: false,
+        scope_analysis: false,
+        maybe_syntax: None,
+    })
+    .unwrap();
+    let transpiled_code = parsed
+        .transpile(
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap()
+        .into_source()
+        .text;
+
+    let _res = js_runtime
+        .execute_script(file_path, transpiled_code)
+        .unwrap();
+
+    js_runtime
+        .run_event_loop(Default::default())
+        .await
+        .expect("Error initializing main.js");
+}
+
 fn js_runtime_worker(rx: mpsc::Receiver<JsMsg>) {
     let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
-        module_loader: Some(Rc::new(TsModuleLoader)),
+        module_loader: Some(Rc::new(deno_core::FsModuleLoader)),
         extensions: vec![runjs::init_ops()],
+        startup_snapshot: Some(RUNTIME_SNAPSHOT),
         ..Default::default()
     });
     let tokio_runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
