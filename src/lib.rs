@@ -219,7 +219,7 @@ async fn init_main_js(js_runtime: &mut JsRuntime) {
         .expect("Error initializing main.js");
 }
 
-fn js_runtime_worker(rx: mpsc::Receiver<JsMsg>) {
+fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
     let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         module_loader: Some(Rc::new(deno_core::FsModuleLoader)),
         extensions: vec![runjs::init_ops()],
@@ -251,5 +251,5 @@ fn js_runtime_worker(rx: mpsc::Receiver<JsMsg>) {
 }
 
 fn start_deno_thread(rx: mpsc::Receiver<JsMsg>) {
-    let _detached = thread::spawn(move || js_runtime_worker(rx));
+    let _detached = thread::spawn(move || js_runtime_thread(rx));
 }
