@@ -13,4 +13,4 @@ function greetJs(input) {
     return "Hello, " + input + "! You've been greeted " + counter + " time" + s + " from Deno/JS!"
 }
 
-console.log(Deno.readTextFileSync("src-deno/main.js")); // print this file to console
+// console.log(Deno.readTextFileSync("src-deno/main.js")); // print this file to console, only works in debug

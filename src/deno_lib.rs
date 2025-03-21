@@ -139,9 +139,11 @@ deno_runtime::deno_core::extension!(
     esm = [dir "src", "plugin_runtime.js"]
 );
 
+// this file should be created during `npm tauri dev` / `npm run tauri build`
+static TAURI_PLUGIN_DENO_DIST: &str = include_str!(concat!(env!("OUT_DIR"), "/../../../../../target/deno_dist.js"));
+
 pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
-    let file_path = std::fs::canonicalize("target/deno_dist.js").unwrap();
-    let code = std::fs::read_to_string(file_path.as_path()).unwrap_or_default();
+    let code = TAURI_PLUGIN_DENO_DIST;
 
     let main_module = ModuleSpecifier::parse("data:text/plain").unwrap();
     let fs = Arc::new(RealFs);

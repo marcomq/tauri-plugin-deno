@@ -16,7 +16,6 @@ There might be small changes later that may also break code.
 Current TODO list:
 - make sure that windows & linux production binaries are working fine
 - try to automatically reload deno javascript files when changing the deno source
-- try to compile backend js into production binary without additional resource
 - try to also call fronted functions from backend
 - check if Android and iOS support can be added easily
 - try to use tauri permissions for deno ops / functions
@@ -35,12 +34,12 @@ function greetJs(input) {
 _tauri_plugin_functions = [ greetJs.name ] // This will make the function "greetJs" callable from UI
 ```
 
-- add `"bundle": {"resources": [  "target/deno_dist.js"],` to `tauri.conf.json` so that javascript files are bundled with your application
 - add the plugin in your client-side javascript: 
-   - add `import { callFunction } from 'tauri-plugin-deno-api'`
-   - add `window.document.body.innerText = await callFunction("greetJs", "hello world")` to get the output of the backend javascript function `greetJs` with parameter `hello world`
-   - alternatively use `window.document.body.innerText = window.__TAURI__.deno.callFunction("greetJs", ["hello world"])` directly, without import, if you want to use old style javascript
-   - input parameters are not limited to strings, you can also use numbers or arrays. The return value currently always needs to be a string
+- add `import { callFunction } from 'tauri-plugin-deno-api'`
+- add `window.document.body.innerText = await callFunction("greetJs", "hello world")` to get the output of the backend javascript function `greetJs` with parameter `hello world`
+- alternatively use `window.document.body.innerText = window.__TAURI__.deno.callFunction("greetJs", ["hello world"])` directly, without import, if you want to use old style javascript
+
+Input parameters are not limited to strings, you can also use numbers or arrays. The return value currently always needs to be a string.
 
 
 ## Security considerations

@@ -11,7 +11,7 @@ import { denoPlugins } from "jsr:@luca/esbuild-deno-loader@0.11.1";
 
 const entryPoint = (Deno.args.length > 0) ? Deno.args[0] :  "./src-tauri/src-deno/main.js";
 
-const _result = await esbuild.build({
+const ctx = await esbuild.context({
   plugins: [...denoPlugins()],
   entryPoints: [entryPoint],
   outfile: "./src-tauri/target/deno_dist.js",
@@ -21,8 +21,7 @@ const _result = await esbuild.build({
   // minify: true,
   treeShaking: true,
 });
-console.log(`Bundle of ${entryPoint} finished.`);
-await esbuild.stop();
-globalThis.close();
+await ctx.watch()
+console.log(`Watching bundle of ${entryPoint}.`);
 
 // deno run --allow-read --allow-write --allow-env --allow-net --allow-run deno_bundler.js
