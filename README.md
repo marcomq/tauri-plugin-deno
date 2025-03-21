@@ -2,16 +2,18 @@
 
 This [tauri](https://v2.tauri.app/) v2 plugin is supposed to make it easy to use Javascript as backend code.
 
-It uses Deno as runtime. 
+It uses Deno as runtime. Most Deno APIs are available - for example reading and writing files.
 
 A single thread is started in the background, using the rust Deno runtime and uses tokio to call javascript functions asynchronously. Channels are used to exchange data between tauri UI and Deno runtime. 
 
-It unfortunately is complicated in Deno to import external modules when not running from command line interface. Therefore, all the modules need to be transpiled into one javascript file `src-tauri/target/deno_dist.js` during compilation. This file is then used by the plugin. In the example project, this transpile step happens automatically during compilation. It is defined in the `package.json` file as `pretauri` step, using the binary of `tauri-plugin-deno-api`. This binary always takes the entrypoint as parameter and always transpiles the result to `src-tauri/target/deno_dist.js`. Nearly all Deno runtime libraries are available. The entrypoint js file will always have full permissions when used in tauri - there is no restriction in reading or writing files as in Deno yet. 
+It unfortunately is complicated in Deno to import external modules when not running from command line interface. Therefore, all the modules need to be transpiled into one javascript file `src-tauri/target/deno_dist.js` during compilation. This file is then used by the plugin. In the example project, this transpile step happens automatically during compilation. It is defined in the `package.json` file as `pretauri` step, using the binary of `tauri-plugin-deno-api`. This binary always takes the entrypoint as parameter and always transpiles the result to `src-tauri/target/deno_dist.js`.  
+The entrypoint js file will always have full permissions when used in tauri - there is no restriction in reading or writing files as in Deno yet.
+
+The source files are expected to be in `src-tauri/src-deno`. Changing them will trigger and automatic rebuild when running with `npm run tauri dev`.
 
 ## Status
 
-This plugin has not been tested in production yet, but you may already use it. It might still have some major issues. I currently only tested it on MacOS and did not optimize it yet for release builds.
-There might be small changes later that may also break code.
+This plugin has not been tested in production yet, but you may already use it, if you test it on your own. It might still have major issues. I currently only tested it on MacOS and did not optimize it yet for release builds.
 
 Current TODO list:
 - make sure that windows & linux production binaries are working fine
@@ -38,7 +40,7 @@ _tauri_plugin_functions = [ greetJs.name ] // This will make the function "greet
 - add `window.document.body.innerText = await callFunction("greetJs", "hello world")` to get the output of the backend javascript function `greetJs` with parameter `hello world`
 - alternatively use `window.document.body.innerText = window.__TAURI__.deno.callFunction("greetJs", ["hello world"])` directly, without import, if you want to use old style javascript
 
-Input parameters are not limited to strings, you can also use numbers or arrays. The return value currently always needs to be a string.
+Input and output parameters are not limited to strings, you can also use numbers or arrays.
 
 
 ## Security considerations
