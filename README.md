@@ -15,7 +15,6 @@ There might be small changes later that may also break code.
 
 Current TODO list:
 - make sure that windows & linux production binaries are working fine
-- try to automatically reload deno javascript files when changing the deno source
 - try to also call fronted functions from backend
 - check if Android and iOS support can be added easily
 - try to use tauri permissions for deno ops / functions
