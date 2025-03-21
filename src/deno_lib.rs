@@ -8,6 +8,8 @@ use crate::models::*;
 use deno_core::error::CoreError;
 use deno_core::serde_v8;
 use deno_core::v8;
+use deno_core::v8::HandleScope;
+use deno_core::FastStaticString;
 use deno_core::FsModuleLoader;
 use deno_core::JsRuntime;
 use deno_core::ModuleSpecifier;
@@ -50,28 +52,33 @@ fn vec_to_v8_vec(my_vec: Vec<JsMany>, js_runtime: &mut JsRuntime) -> Vec<v8::Glo
     v8_vec
 }
 
+fn v8_to_js(scope: &mut HandleScope, v8_val: v8::Global<v8::Value>) -> std::result::Result<JsMany, CoreError> {
+    let local_result: v8::Local<v8::Value> = v8::Local::new(scope,v8_val);
+    serde_v8::from_v8(scope, local_result)
+        .map_err(|err| { 
+            eprintln!("{}", err.to_string());
+            CoreError::Parse(FastStaticString::default())
+        })
+}
+
 /// Call given javascript function and return result
 async fn deno_call_js(
     args: Vec<JsMany>,
     js_runtime: &mut JsRuntime,
     js_fn: &v8::Global<v8::Function>,
-) -> std::result::Result<String, CoreError> {
+) -> std::result::Result<JsMany, CoreError> {
     let v8_args = vec_to_v8_vec(args, js_runtime);
     let v8_result = js_runtime.call_with_args(js_fn, &v8_args).await?;
-    Ok(v8_result
-        .open(js_runtime.v8_isolate())
-        .to_rust_string_lossy(&mut js_runtime.handle_scope()))
+    v8_to_js(&mut js_runtime.handle_scope(), v8_result)
 }
 
 /// Execute given javascript without any preprocessing
 fn deno_exec_js(
     code: String,
     js_runtime: &mut JsRuntime,
-) -> std::result::Result<String, CoreError> {
+) -> std::result::Result<JsMany, CoreError> {
     let my_var = js_runtime.execute_script("ext:<anon>", code).unwrap();
-    Ok(my_var
-        .open(js_runtime.v8_isolate())
-        .to_rust_string_lossy(&mut js_runtime.handle_scope()))
+    v8_to_js(&mut js_runtime.handle_scope(), my_var)
 }
 
 /// Executes given javascript and returns value - used here just to read variable.
@@ -79,12 +86,10 @@ fn deno_exec_js(
 fn deno_read_var(
     variable: &str,
     js_runtime: &mut JsRuntime,
-) -> std::result::Result<String, CoreError> {
+) -> std::result::Result<JsMany, CoreError> {
     let variable = variable.replace(&['(', ')', '\"', ';', '\'', '=', ':'][..], ""); // replace chars to avoid function call
     let my_var = js_runtime.execute_script("()", variable)?;
-    Ok(my_var
-        .open(js_runtime.v8_isolate())
-        .to_rust_string_lossy(&mut js_runtime.handle_scope()))
+    v8_to_js(&mut js_runtime.handle_scope(), my_var)
 }
 
 async fn deno_tokio_loop(
@@ -111,7 +116,7 @@ async fn deno_tokio_loop(
             };
             let response = match result {
                 Ok(val) => val,
-                Err(err) => format!("error: {}", err.to_string()),
+                Err(err) => JsMany::String(format!("error: {}", err.to_string())),
             };
 
             let _ignore = received.responder.send(response);
@@ -123,11 +128,11 @@ fn register_fn(
     fn_name: String,
     js_runtime: &mut JsRuntime,
     fn_map: &mut HashMap<String, v8::Global<v8::Function>>,
-) -> std::result::Result<String, CoreError> {
+) -> std::result::Result<JsMany, CoreError> {
     // println!("register {}", &fn_name);
     let my_fn = get_fn(js_runtime, &fn_name);
     fn_map.insert(fn_name, my_fn);
-    Ok("Ok".to_string())
+    Ok(JsMany::Bool(true))
 }
 
 deno_runtime::deno_core::extension!(
@@ -186,9 +191,9 @@ pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
     js_runtime.execute_script("deno_dist.js", code).unwrap();
 
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
-    let js_allowed_fns = if let Ok(fn_s) = deno_read_var("_tauri_plugin_functions", &mut js_runtime)
+    let js_allowed_fns = if let Ok(JsMany::StringVec(fn_s)) = deno_read_var("_tauri_plugin_functions", &mut js_runtime)
     {
-        fn_s.split(",").map(str::to_string).collect() // array to string conversion doesn't work yet in read_var
+        fn_s
     } else {
         vec![]
     };

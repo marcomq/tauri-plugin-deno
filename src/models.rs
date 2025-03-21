@@ -26,9 +26,11 @@ pub struct ReadVarRequest {
     pub value: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum JsMany {
+    #[default]
+    Null,
     Bool(bool),
     Number(u64),
     Float(f64),
@@ -53,13 +55,13 @@ pub struct CallFnRequest {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StringResponse {
-    pub value: String,
+pub struct JsManyResponse {
+    pub value: JsMany,
 }
 
 pub struct JsMsg {
     pub req: JsRequest,
-    pub responder: oneshot::Sender<String>,
+    pub responder: oneshot::Sender<JsMany>,
 }
 
 pub type UiSender = Mutex<mpsc::Sender<JsMsg>>;

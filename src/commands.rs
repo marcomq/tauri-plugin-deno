@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 
 macro_rules! send_receive_result {
     ($app:expr, $payload:expr) => {{
-        let (responder, receiver) = oneshot::channel::<String>();
+        let (responder, receiver) = oneshot::channel::<JsMany>();
         let sender_state = $app.state::<UiSender>();
         let locked_tx = sender_state.lock().await;
         locked_tx
@@ -23,7 +23,7 @@ macro_rules! send_receive_result {
             .await
             .unwrap();
         drop(locked_tx);
-        Ok(StringResponse {
+        Ok(JsManyResponse {
             value: receiver.await.unwrap_or_default(),
         })
     }};
@@ -33,27 +33,27 @@ macro_rules! send_receive_result {
 pub(crate) async fn run_code<R: Runtime>(
     app: AppHandle<R>,
     payload: RunCodeRequest,
-) -> Result<StringResponse> {
+) -> Result<JsManyResponse> {
     send_receive_result!(app, JsRequest::RunCodeRequest(payload))
 }
 #[command]
 pub(crate) async fn register_function<R: Runtime>(
     app: AppHandle<R>,
     payload: RegisterRequest,
-) -> Result<StringResponse> {
+) -> Result<JsManyResponse> {
     send_receive_result!(app, JsRequest::RegisterRequest(payload))
 }
 #[command]
 pub(crate) async fn call_function<R: Runtime>(
     app: AppHandle<R>,
     payload: CallFnRequest,
-) -> Result<StringResponse> {
+) -> Result<JsManyResponse> {
     send_receive_result!(app, JsRequest::CallFnRequest(payload))
 }
 #[command]
 pub(crate) async fn read_variable<R: Runtime>(
     app: AppHandle<R>,
     payload: ReadVarRequest,
-) -> Result<StringResponse> {
+) -> Result<JsManyResponse> {
     send_receive_result!(app, JsRequest::ReadVarRequest(payload))
 }
