@@ -4,7 +4,7 @@
   "version": "0.3.0",
   "type": "module",
   "scripts": {
-    "pretauri": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run  npm:tauri-plugin-deno-api",
+    "pretauri": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run npm:tauri-plugin-deno-api src-tauri/src-deno/main.js",
     "tauri": "tauri"
   },
   "dependencies": {

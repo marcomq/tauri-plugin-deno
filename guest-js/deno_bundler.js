@@ -9,18 +9,19 @@
 import * as esbuild from  "npm:esbuild@0.25.1";
 import { denoPlugins } from "jsr:@luca/esbuild-deno-loader@0.11.1";
 
-const result = await esbuild.build({
+const entryPoint = (Deno.args.length > 0) ? Deno.args[0] :  "./src-tauri/src-deno/main.js";
+
+const _result = await esbuild.build({
   plugins: [...denoPlugins()],
-  entryPoints: ["./src-tauri/src-deno/main.js"],
+  entryPoints: [entryPoint],
   outfile: "./src-tauri/target/deno_dist.js",
   bundle: true,
   platform: "node",
   format: "esm",
   // minify: true,
-  // sourcemap: true,
   treeShaking: true,
 });
-console.log("bundle finished: " + result.outputFiles);
+console.log(`Bundle of ${entryPoint} finished.`);
 await esbuild.stop();
 globalThis.close();
 

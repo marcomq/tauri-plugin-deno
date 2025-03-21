@@ -8,9 +8,9 @@ use crate::models::*;
 use deno_core::error::CoreError;
 use deno_core::serde_v8;
 use deno_core::v8;
+use deno_core::FsModuleLoader;
 use deno_core::JsRuntime;
 use deno_core::ModuleSpecifier;
-use deno_core::FsModuleLoader;
 use deno_fs::RealFs;
 use deno_resolver::npm::DenoInNpmPackageChecker;
 use deno_resolver::npm::NpmResolver;
@@ -142,14 +142,8 @@ deno_runtime::deno_core::extension!(
 pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
     let file_path = std::fs::canonicalize("target/deno_dist.js").unwrap();
     let code = std::fs::read_to_string(file_path.as_path()).unwrap_or_default();
-/*     let code = std::fs::read_to_string(file_path.as_path()).unwrap_or_default();
-    let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
-        module_loader: Some(Rc::new(FsModuleLoader)),
-        startup_snapshot: Some(RUNTIME_SNAPSHOT),
-        ..Default::default()
-    });
- */
-  let main_module = ModuleSpecifier::parse("data:text/plain").unwrap();
+
+    let main_module = ModuleSpecifier::parse("data:text/plain").unwrap();
     let fs = Arc::new(RealFs);
     let permission_desc_parser = Arc::new(RuntimePermissionDescriptorParser::new(
         sys_traits::impls::RealSys,
@@ -179,7 +173,7 @@ pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
             extensions: vec![runjs::init_ops_and_esm()],
             ..Default::default()
         },
-    ); 
+    );
 
     let tokio_runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

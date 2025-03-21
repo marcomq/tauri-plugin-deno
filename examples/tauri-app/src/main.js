@@ -8,7 +8,7 @@ async function greetRust() {
   outputEl.textContent = await tauri.core.invoke("greet_rust", { name: inputField.value });
 }
 async function greetJs() {
-  outputEl.textContent = await tauri.deno.call.greetJs(inputField.value);
+  outputEl.textContent = await tauri.deno.call.greetJs(inputField.value + 2);
   // Alternatively:
   // outputEl.textContent = await tauri.deno.callFunction("greet_deno", [inputField.value])
 }

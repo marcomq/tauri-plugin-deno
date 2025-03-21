@@ -1,5 +1,5 @@
 import * as other from "./other.ts" 
-let _tauri_plugin_functions = [ greetJs.name ]
+_tauri_plugin_functions = [ greetJs.name ]
 
 console.log("Js initialized");
 other.printHello("world");
