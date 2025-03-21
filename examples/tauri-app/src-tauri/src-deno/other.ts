@@ -1,3 +1,5 @@
 export function printHello(world: String) {
-    console.log("Hello " + world + " from other.ts");
+    let result = "Hello " + world + " from other.ts";
+    console.log(result);
+    return result;
 }

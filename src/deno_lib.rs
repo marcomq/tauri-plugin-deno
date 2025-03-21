@@ -4,13 +4,13 @@
 //  git clone https://github.com/marcomq/tauri-plugin-deno
 
 use crate::deno_ops::*;
-use crate::deno_ts_loader;
 use crate::models::*;
 use deno_core::error::CoreError;
 use deno_core::serde_v8;
 use deno_core::v8;
 use deno_core::JsRuntime;
 use deno_core::ModuleSpecifier;
+use deno_core::FsModuleLoader;
 use deno_fs::RealFs;
 use deno_resolver::npm::DenoInNpmPackageChecker;
 use deno_resolver::npm::NpmResolver;
@@ -95,7 +95,7 @@ async fn deno_tokio_loop(
     js_runtime
         .run_event_loop(Default::default())
         .await
-        .expect("Error initializing main.js");
+        .expect("Error initializing deno-dist.js");
     loop {
         let msg = rx.recv().await;
         if let Some(received) = msg {
@@ -140,20 +140,28 @@ deno_runtime::deno_core::extension!(
 );
 
 pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
-    let file_path = std::fs::canonicalize("src-deno/main.js").unwrap();
-    let main_module = ModuleSpecifier::from_file_path(file_path.as_path()).unwrap();
+    let file_path = std::fs::canonicalize("target/deno_dist.js").unwrap();
+    let code = std::fs::read_to_string(file_path.as_path()).unwrap_or_default();
+/*     let code = std::fs::read_to_string(file_path.as_path()).unwrap_or_default();
+    let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+        module_loader: Some(Rc::new(FsModuleLoader)),
+        startup_snapshot: Some(RUNTIME_SNAPSHOT),
+        ..Default::default()
+    });
+ */
+  let main_module = ModuleSpecifier::parse("data:text/plain").unwrap();
     let fs = Arc::new(RealFs);
     let permission_desc_parser = Arc::new(RuntimePermissionDescriptorParser::new(
         sys_traits::impls::RealSys,
     ));
-    let mut worker = MainWorker::bootstrap_from_options(
+    let worker = MainWorker::bootstrap_from_options(
         &main_module,
         WorkerServiceOptions::<
             DenoInNpmPackageChecker,
             NpmResolver<sys_traits::impls::RealSys>,
             sys_traits::impls::RealSys,
         > {
-            module_loader: Rc::new(deno_ts_loader::TsModuleLoader),
+            module_loader: Rc::new(FsModuleLoader),
             permissions: PermissionsContainer::allow_all(permission_desc_parser),
             blob_store: Default::default(),
             broadcast_channel: Default::default(),
@@ -171,18 +179,15 @@ pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
             extensions: vec![runjs::init_ops_and_esm()],
             ..Default::default()
         },
-    );
+    ); 
 
     let tokio_runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
 
-    tokio_runtime
-        .block_on(worker.execute_main_module(&main_module))
-        .expect("Error in main.js");
-
     let mut js_runtime = worker.js_runtime;
+    js_runtime.execute_script("deno_dist.js", code).unwrap();
 
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
     let js_allowed_fns = if let Ok(fn_s) = deno_read_var("_tauri_plugin_functions", &mut js_runtime)

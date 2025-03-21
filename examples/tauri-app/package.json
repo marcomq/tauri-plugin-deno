@@ -1,9 +1,10 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
+    "pretauri": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run  npm:tauri-plugin-deno-api",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -11,6 +12,8 @@
     "tauri-plugin-deno-api": "file:../../"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.3"
+    "esbuild": "^0.25.1",
+    "@tauri-apps/cli": "^2.3",
+    "deno": "^2.2.4"
   }
 }

@@ -19,7 +19,6 @@ mod mobile;
 mod commands;
 mod deno_lib;
 mod deno_ops;
-mod deno_ts_loader;
 mod error;
 mod models;
 

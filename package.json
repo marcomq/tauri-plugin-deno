@@ -1,6 +1,6 @@
 {
   "name": "tauri-plugin-deno-api",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Marco Mengelkoch",
   "description": "Javascript package for tauri plugin deno.",
   "type": "module",
@@ -12,6 +12,9 @@
     "import": "./dist-js/index.js",
     "require": "./dist-js/index.cjs",
     "html": "./dist-js/index.iife.js"
+  },
+  "bin": {
+    "tauri-plugin-deno-api": "guest-js/deno_bundler.js"
   },
   "files": [
     "dist-js",
@@ -38,7 +41,7 @@
     "@rollup/plugin-node-resolve": "^15.3.0",
     "@rollup/plugin-typescript": "^11.1.6",
     "rollup": "^4.9.6",
-    "typescript": "^5.3.3",
-    "tslib": "^2.6.2"
+    "tslib": "^2.6.2",
+    "typescript": "^5.3.3"
   }
 }
