@@ -1,6 +1,20 @@
-use deno_core::op2;
+use crate::models::DenoEmitSender;
+use crate::JsMany;
+use deno_core::{op2, OpState};
+use std::{cell::RefCell, rc::Rc};
 
-#[op2(fast)]
-pub fn op_hello(#[string] text: &str) {
-    println!("Hello {} from an op!", text);
+#[op2(async)]
+pub async fn op_emit(
+    state: Rc<RefCell<OpState>>,
+    #[string] event: String,
+    #[serde] value: JsMany,
+) -> Result<(), std::io::Error> {
+    let state = state.borrow();
+    let emit_sender = state.borrow::<DenoEmitSender>();
+    // println!("Hello {} from an op!", &event);
+    emit_sender
+        .send((event, value))
+        .await
+        .expect("cannot send message as emit");
+    Ok(())
 }

@@ -21,11 +21,15 @@ use deno_runtime::permissions::RuntimePermissionDescriptorParser;
 use deno_runtime::worker::MainWorker;
 use deno_runtime::worker::WorkerOptions;
 use deno_runtime::worker::WorkerServiceOptions;
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::vec;
+use tauri::AppHandle;
+use tauri::Emitter;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function> {
     let deno_ctx = js_runtime.main_context();
@@ -52,13 +56,15 @@ fn vec_to_v8_vec(my_vec: Vec<JsMany>, js_runtime: &mut JsRuntime) -> Vec<v8::Glo
     v8_vec
 }
 
-fn v8_to_js(scope: &mut HandleScope, v8_val: v8::Global<v8::Value>) -> std::result::Result<JsMany, CoreError> {
-    let local_result: v8::Local<v8::Value> = v8::Local::new(scope,v8_val);
-    serde_v8::from_v8(scope, local_result)
-        .map_err(|err| { 
-            eprintln!("{}", err.to_string());
-            CoreError::Parse(FastStaticString::default())
-        })
+fn v8_to_js(
+    scope: &mut HandleScope,
+    v8_val: v8::Global<v8::Value>,
+) -> std::result::Result<JsMany, CoreError> {
+    let local_result: v8::Local<v8::Value> = v8::Local::new(scope, v8_val);
+    serde_v8::from_v8(scope, local_result).map_err(|err| {
+        eprintln!("{}", err.to_string());
+        CoreError::Parse(FastStaticString::default())
+    })
 }
 
 /// Call given javascript function and return result
@@ -135,17 +141,36 @@ fn register_fn(
     Ok(JsMany::Bool(true))
 }
 
+lazy_static! {
+    static ref DENO_EMIT_SENDER_RECEIVER: Mutex<(mpsc::Sender<EmitPayload>, mpsc::Receiver<EmitPayload>)> =
+        Mutex::new(mpsc::channel(1000));
+    pub static ref DENO_EMIT_SENDER: DenoEmitSender =
+        DENO_EMIT_SENDER_RECEIVER.blocking_lock().0.clone();
+}
+
 deno_runtime::deno_core::extension!(
     runjs,
     ops = [
-        op_hello,
+        op_emit,
     ],
     esm_entry_point = "ext:runjs/plugin_runtime.js",
-    esm = [dir "src", "plugin_runtime.js"]
+    esm = [dir "src", "plugin_runtime.js"],
+    state = |state| {
+        state.put::<DenoEmitSender>(DENO_EMIT_SENDER.clone());
+    },
 );
 
+pub fn handle_emit<R: tauri::Runtime>(app: &AppHandle<R>) {
+    if let Some(received) = DENO_EMIT_SENDER_RECEIVER.blocking_lock().1.blocking_recv() {
+        app.emit(&received.0, received.1).unwrap();
+    }
+}
+
 // this file should be created during `npm tauri dev` / `npm run tauri build`
-static TAURI_PLUGIN_DENO_DIST: &str = include_str!(concat!(env!("OUT_DIR"), "/../../../../../target/deno_dist.js"));
+static TAURI_PLUGIN_DENO_DIST: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/../../../../../target/deno_dist.js"
+));
 
 pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
     let code = TAURI_PLUGIN_DENO_DIST;
@@ -191,7 +216,8 @@ pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
     js_runtime.execute_script("deno_dist.js", code).unwrap();
 
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
-    let js_allowed_fns = if let Ok(JsMany::StringVec(fn_s)) = deno_read_var("_tauri_plugin_functions", &mut js_runtime)
+    let js_allowed_fns = if let Ok(JsMany::StringVec(fn_s)) =
+        deno_read_var("_tauri_plugin_functions", &mut js_runtime)
     {
         fn_s
     } else {

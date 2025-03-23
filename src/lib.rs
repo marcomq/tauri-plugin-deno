@@ -7,7 +7,7 @@ pub use models::*;
 use std::thread;
 use tauri::{
     plugin::{Builder, TauriPlugin},
-    Manager, Runtime,
+    AppHandle, Manager, Runtime,
 };
 use tokio::sync::{mpsc, Mutex};
 
@@ -58,6 +58,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             let (tx, rx) = mpsc::channel(1000);
             app.manage(Mutex::new(tx));
             start_deno_thread(rx);
+            start_emit_handler_thread(app.clone());
             Ok(())
         })
         .build()
@@ -65,4 +66,15 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 
 fn start_deno_thread(rx: mpsc::Receiver<JsMsg>) {
     let _detached = thread::spawn(move || deno_lib::js_runtime_thread(rx));
+}
+
+fn start_emit_handler_thread<R: Runtime>(app: AppHandle<R>) {
+    let _detached = thread::spawn(move || emit_handler_thread(app));
+}
+
+fn emit_handler_thread<R: Runtime>(app: AppHandle<R>) {
+    let _lazy_init: DenoEmitSender = deno_lib::DENO_EMIT_SENDER.clone();
+    loop {
+        deno_lib::handle_emit(&app);
+    }
 }

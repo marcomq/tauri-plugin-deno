@@ -1,7 +1,7 @@
-const { core } = Deno;
+import { op_emit } from "ext:core/ops";
 
-globalThis.op_hello = (...args) => { 
-  op_hello(arts);
+globalThis.emit = (event, value) => { 
+  op_emit(event, value);
 };
 
 globalThis.addTauri = (fn) => {

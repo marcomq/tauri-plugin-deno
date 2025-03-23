@@ -13,11 +13,10 @@ The source files are expected to be in `src-tauri/src-deno`. Changing them will 
 
 ## Status
 
-This plugin has not been tested in production yet, but you may already use it, if you test it on your own. It might still have major issues. I currently only tested it on MacOS and did not optimize it yet for release builds.
+This plugin was currently only tested it on MacOS.
 
 Current TODO list:
 - make sure that windows & linux production binaries are working fine
-- try to also call fronted functions from backend
 - check if Android and iOS support can be added easily
 - try to use tauri permissions for deno ops / functions
 - implement tests & github workflows
@@ -25,8 +24,11 @@ Current TODO list:
 ## Usage
 
 - run `npm run tauri add deno`
-- add `src-tauri/src-deno/main.js` and modify it according to your needs, for example add 
+- add `src-tauri/src-deno/main.js` and modify it according to your needs. This function contains Deno code that runs as backend and can perform any tasks like reading files etc...
 
+### Call Deno function from frontend
+
+Deno backend code:
 ```javascript
 // src-tauri/src-deno/main.js
 function greetJs(input) {
@@ -34,13 +36,36 @@ function greetJs(input) {
 }
 _tauri_plugin_functions = [ greetJs.name ] // This will make the function "greetJs" callable from UI
 ```
+Deno frontend code:
 
-- add the plugin in your client-side javascript: 
+```javascript
+// src/main.js
+`window.document.body.innerText = window.__TAURI__.deno.callFunction("greetJs", ["hello world"])`
+```
+
+Or alternatively - if you want to use import statements:
 - add `import { callFunction } from 'tauri-plugin-deno-api'`
-- add `window.document.body.innerText = await callFunction("greetJs", "hello world")` to get the output of the backend javascript function `greetJs` with parameter `hello world`
-- alternatively use `window.document.body.innerText = window.__TAURI__.deno.callFunction("greetJs", ["hello world"])` directly, without import, if you want to use old style javascript
+- add `window.document.body.innerText = await callFunction("greetJs", ["hello world"])` to get the output of the backend javascript function `greetJs` with parameter `hello world`
 
-Input and output parameters are not limited to strings, you can also use numbers or arrays.
+Input and output parameters are not limited to strings, you can also use numbers or arrays. More complex types might be added in future.
+
+### Call frontend from Deno
+
+Tauri has an `emit` function that is available in rust code to send something back from backend to frontend, for example status information.
+This is also available in the Deno plugin and can simply be called by using 
+```javascript
+// src-tauri/src-deno/main.js
+emit("event_id", Value)
+```
+You can listen to the event on frontend by calling 
+```javascript
+// src/main.js 
+__TAURI__.event.listen("event_id", function(val) { 
+    console.log(val); 
+});
+```
+Check out the [tauri documentation](https://v2.tauri.app/develop/calling-frontend/#listening-to-events-on-the-frontend) for more info about this.
+Only `emit` is available in this plugin. Other functions are not available yet.
 
 
 ## Security considerations

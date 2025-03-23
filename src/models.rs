@@ -65,3 +65,5 @@ pub struct JsMsg {
 }
 
 pub type UiSender = Mutex<mpsc::Sender<JsMsg>>;
+pub type EmitPayload = (String, JsMany);
+pub type DenoEmitSender = mpsc::Sender<EmitPayload>;
