@@ -80,10 +80,7 @@ async fn deno_call_js(
 }
 
 /// Execute given javascript without any preprocessing
-fn deno_exec_js(
-    code: String,
-    js_runtime: &mut JsRuntime,
-) -> std::result::Result<Value, CoreError> {
+fn deno_exec_js(code: String, js_runtime: &mut JsRuntime) -> std::result::Result<Value, CoreError> {
     let my_var = js_runtime.execute_script("ext:<anon>", code).unwrap();
     v8_to_js(&mut js_runtime.handle_scope(), my_var)
 }
@@ -217,16 +214,19 @@ pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
     js_runtime.execute_script("deno_dist.js", code).unwrap();
 
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
-    let js_allowed_fns = if let Ok(Value::Array(fn_s)) =
-        deno_read_var("_tauri_plugin_functions", &mut js_runtime)
-    {
-        fn_s
-    } else {
-        vec![]
-    };
+    let js_allowed_fns =
+        if let Ok(Value::Array(fn_s)) = deno_read_var("_tauri_plugin_functions", &mut js_runtime) {
+            fn_s
+        } else {
+            vec![]
+        };
     for function_name in js_allowed_fns {
-        register_fn(function_name.as_str().unwrap().into(), &mut js_runtime, &mut global_fns)
-            .expect(&format!("cannot register function {function_name}"));
+        register_fn(
+            function_name.as_str().unwrap().into(),
+            &mut js_runtime,
+            &mut global_fns,
+        )
+        .expect(&format!("cannot register function {function_name}"));
     }
     tokio_runtime.block_on(deno_tokio_loop(js_runtime, global_fns, rx));
 

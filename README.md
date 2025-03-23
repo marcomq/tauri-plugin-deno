@@ -13,7 +13,7 @@ The source files are expected to be in `src-tauri/src-deno`. Changing them will 
 
 ## Status
 
-This plugin was currently only tested it on MacOS.
+This plugin was tested on MacOS & Windows and is expected to work fine on linux too. There still seem to be issues on windows production binaries, as Deno code isn't called on windows.
 
 Current TODO list:
 - make sure that windows & linux production binaries are working fine
@@ -79,3 +79,9 @@ There are following additional permissions available that can be added to by usi
 - allow-read-variable (allows `readVariable`; read js variable from backend)
 - allow-register-function (allows `registerFunction`; client side way of allowing additional functions)
 - allow-run-code  (allows `runCode`; call code directly in backend)
+
+## Preconditions:
+In addition to the usual tauri preconditions, like installing rust, you need to perform following steps:
+
+Windows: 
+- install clang/llvm: `choco install llvm`

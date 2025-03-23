@@ -1,5 +1,5 @@
 use crate::models::DenoEmitSender;
-use deno_core::{op2, OpState, serde_json};
+use deno_core::{op2, serde_json, OpState};
 use std::{cell::RefCell, rc::Rc};
 
 #[op2(async)]

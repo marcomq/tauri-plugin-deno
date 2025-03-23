@@ -15,18 +15,19 @@ repository = "https://github.com/marcomq/tauri-plugin-deno"
 tauri = { version = "2" }
 serde = "1.0"
 thiserror = "2"
-
 deno_core = "0.338"
 deno_fs = "0.103.0"
 deno_error = "0.5.5"
-deno_runtime = { version = "0.201", features = ["transpile"] } # , features = ["include_js_files_for_snapshotting"] }
+deno_runtime = { version = "0.201", features = ["transpile"] } 
 deno_resolver = "0.24.0"
 sys_traits = "0.1.8"
-
 reqwest = "0.12"
 tokio = { version = "1.43.0", features = ["full"] }
 lazy_static = "1.5.0"
-# deno_runtime = { version = "0.201" } # , features = ["include_js_files_for_snapshotting"] }
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }
+
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.9", features = ["sysinfoapi"] }
