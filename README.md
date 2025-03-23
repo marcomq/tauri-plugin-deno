@@ -47,7 +47,7 @@ Or alternatively - if you want to use import statements:
 - add `import { callFunction } from 'tauri-plugin-deno-api'`
 - add `window.document.body.innerText = await callFunction("greetJs", ["hello world"])` to get the output of the backend javascript function `greetJs` with parameter `hello world`
 
-Input and output parameters are not limited to strings, you can also use numbers or arrays. More complex types might be added in future.
+Input and output parameters are not limited to strings, you can also use numbers, arrays and even json.
 
 ### Call frontend from Deno
 
