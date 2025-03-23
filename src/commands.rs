@@ -6,13 +6,14 @@
 use crate::models::*;
 use crate::Result;
 use crate::UiSender;
+use deno_core::serde_json::Value;
 use tauri::Manager;
 use tauri::{command, AppHandle, Runtime};
 use tokio::sync::oneshot;
 
 macro_rules! send_receive_result {
     ($app:expr, $payload:expr) => {{
-        let (responder, receiver) = oneshot::channel::<JsMany>();
+        let (responder, receiver) = oneshot::channel::<Value>();
         let sender_state = $app.state::<UiSender>();
         let locked_tx = sender_state.lock().await;
         locked_tx
@@ -23,7 +24,7 @@ macro_rules! send_receive_result {
             .await
             .unwrap();
         drop(locked_tx);
-        Ok(JsManyResponse {
+        Ok(JsonResponse {
             value: receiver.await.unwrap_or_default(),
         })
     }};
@@ -33,27 +34,27 @@ macro_rules! send_receive_result {
 pub(crate) async fn run_code<R: Runtime>(
     app: AppHandle<R>,
     payload: RunCodeRequest,
-) -> Result<JsManyResponse> {
+) -> Result<JsonResponse> {
     send_receive_result!(app, JsRequest::RunCodeRequest(payload))
 }
 #[command]
 pub(crate) async fn register_function<R: Runtime>(
     app: AppHandle<R>,
     payload: RegisterRequest,
-) -> Result<JsManyResponse> {
+) -> Result<JsonResponse> {
     send_receive_result!(app, JsRequest::RegisterRequest(payload))
 }
 #[command]
 pub(crate) async fn call_function<R: Runtime>(
     app: AppHandle<R>,
     payload: CallFnRequest,
-) -> Result<JsManyResponse> {
+) -> Result<JsonResponse> {
     send_receive_result!(app, JsRequest::CallFnRequest(payload))
 }
 #[command]
 pub(crate) async fn read_variable<R: Runtime>(
     app: AppHandle<R>,
     payload: ReadVarRequest,
-) -> Result<JsManyResponse> {
+) -> Result<JsonResponse> {
     send_receive_result!(app, JsRequest::ReadVarRequest(payload))
 }

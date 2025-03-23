@@ -1,13 +1,12 @@
 use crate::models::DenoEmitSender;
-use crate::JsMany;
-use deno_core::{op2, OpState};
+use deno_core::{op2, OpState, serde_json};
 use std::{cell::RefCell, rc::Rc};
 
 #[op2(async)]
 pub async fn op_emit(
     state: Rc<RefCell<OpState>>,
     #[string] event: String,
-    #[serde] value: JsMany,
+    #[serde] value: serde_json::Value,
 ) -> Result<(), std::io::Error> {
     let state = state.borrow();
     let emit_sender = state.borrow::<DenoEmitSender>();

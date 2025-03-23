@@ -3,6 +3,7 @@
 //  Licensed under MIT License, see License file for more details
 //  git clone https://github.com/marcomq/tauri-plugin-deno
 
+use deno_core::serde_json::Value;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -26,19 +27,6 @@ pub struct ReadVarRequest {
     pub value: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-#[serde(untagged)]
-pub enum JsMany {
-    #[default]
-    Null,
-    Bool(bool),
-    Number(u64),
-    Float(f64),
-    String(String),
-    StringVec(Vec<String>),
-    FloatVec(Vec<f64>),
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterRequest {
@@ -50,20 +38,20 @@ pub struct RegisterRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CallFnRequest {
     pub function_name: String,
-    pub args: Vec<JsMany>,
+    pub args: Vec<Value>,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JsManyResponse {
-    pub value: JsMany,
+pub struct JsonResponse {
+    pub value: Value,
 }
 
 pub struct JsMsg {
     pub req: JsRequest,
-    pub responder: oneshot::Sender<JsMany>,
+    pub responder: oneshot::Sender<Value>,
 }
 
 pub type UiSender = Mutex<mpsc::Sender<JsMsg>>;
-pub type EmitPayload = (String, JsMany);
+pub type EmitPayload = (String, Value);
 pub type DenoEmitSender = mpsc::Sender<EmitPayload>;

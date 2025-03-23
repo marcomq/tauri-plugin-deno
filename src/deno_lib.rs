@@ -6,6 +6,7 @@
 use crate::deno_ops::*;
 use crate::models::*;
 use deno_core::error::CoreError;
+use deno_core::serde_json::Value;
 use deno_core::serde_v8;
 use deno_core::v8;
 use deno_core::v8::HandleScope;
@@ -44,7 +45,7 @@ fn get_fn(js_runtime: &mut JsRuntime, fn_name: &str) -> v8::Global<v8::Function>
     v8::Global::new(&mut scope, v8_val)
 }
 
-fn vec_to_v8_vec(my_vec: Vec<JsMany>, js_runtime: &mut JsRuntime) -> Vec<v8::Global<v8::Value>> {
+fn vec_to_v8_vec(my_vec: Vec<Value>, js_runtime: &mut JsRuntime) -> Vec<v8::Global<v8::Value>> {
     let mut v8_vec: vec::Vec<v8::Global<v8::Value>> = vec![];
     let mut scope = js_runtime.handle_scope();
     v8_vec.reserve(my_vec.len());
@@ -59,7 +60,7 @@ fn vec_to_v8_vec(my_vec: Vec<JsMany>, js_runtime: &mut JsRuntime) -> Vec<v8::Glo
 fn v8_to_js(
     scope: &mut HandleScope,
     v8_val: v8::Global<v8::Value>,
-) -> std::result::Result<JsMany, CoreError> {
+) -> std::result::Result<Value, CoreError> {
     let local_result: v8::Local<v8::Value> = v8::Local::new(scope, v8_val);
     serde_v8::from_v8(scope, local_result).map_err(|err| {
         eprintln!("{}", err.to_string());
@@ -69,10 +70,10 @@ fn v8_to_js(
 
 /// Call given javascript function and return result
 async fn deno_call_js(
-    args: Vec<JsMany>,
+    args: Vec<Value>,
     js_runtime: &mut JsRuntime,
     js_fn: &v8::Global<v8::Function>,
-) -> std::result::Result<JsMany, CoreError> {
+) -> std::result::Result<Value, CoreError> {
     let v8_args = vec_to_v8_vec(args, js_runtime);
     let v8_result = js_runtime.call_with_args(js_fn, &v8_args).await?;
     v8_to_js(&mut js_runtime.handle_scope(), v8_result)
@@ -82,7 +83,7 @@ async fn deno_call_js(
 fn deno_exec_js(
     code: String,
     js_runtime: &mut JsRuntime,
-) -> std::result::Result<JsMany, CoreError> {
+) -> std::result::Result<Value, CoreError> {
     let my_var = js_runtime.execute_script("ext:<anon>", code).unwrap();
     v8_to_js(&mut js_runtime.handle_scope(), my_var)
 }
@@ -92,7 +93,7 @@ fn deno_exec_js(
 fn deno_read_var(
     variable: &str,
     js_runtime: &mut JsRuntime,
-) -> std::result::Result<JsMany, CoreError> {
+) -> std::result::Result<Value, CoreError> {
     let variable = variable.replace(&['(', ')', '\"', ';', '\'', '=', ':'][..], ""); // replace chars to avoid function call
     let my_var = js_runtime.execute_script("()", variable)?;
     v8_to_js(&mut js_runtime.handle_scope(), my_var)
@@ -122,7 +123,7 @@ async fn deno_tokio_loop(
             };
             let response = match result {
                 Ok(val) => val,
-                Err(err) => JsMany::String(format!("error: {}", err.to_string())),
+                Err(err) => Value::String(format!("error: {}", err.to_string())),
             };
 
             let _ignore = received.responder.send(response);
@@ -134,11 +135,11 @@ fn register_fn(
     fn_name: String,
     js_runtime: &mut JsRuntime,
     fn_map: &mut HashMap<String, v8::Global<v8::Function>>,
-) -> std::result::Result<JsMany, CoreError> {
+) -> std::result::Result<Value, CoreError> {
     // println!("register {}", &fn_name);
     let my_fn = get_fn(js_runtime, &fn_name);
     fn_map.insert(fn_name, my_fn);
-    Ok(JsMany::Bool(true))
+    Ok(Value::Bool(true))
 }
 
 lazy_static! {
@@ -216,7 +217,7 @@ pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
     js_runtime.execute_script("deno_dist.js", code).unwrap();
 
     let mut global_fns: HashMap<String, v8::Global<v8::Function>> = HashMap::new();
-    let js_allowed_fns = if let Ok(JsMany::StringVec(fn_s)) =
+    let js_allowed_fns = if let Ok(Value::Array(fn_s)) =
         deno_read_var("_tauri_plugin_functions", &mut js_runtime)
     {
         fn_s
@@ -224,7 +225,7 @@ pub fn js_runtime_thread(rx: mpsc::Receiver<JsMsg>) {
         vec![]
     };
     for function_name in js_allowed_fns {
-        register_fn(function_name.clone(), &mut js_runtime, &mut global_fns)
+        register_fn(function_name.as_str().unwrap().into(), &mut js_runtime, &mut global_fns)
             .expect(&format!("cannot register function {function_name}"));
     }
     tokio_runtime.block_on(deno_tokio_loop(js_runtime, global_fns, rx));
