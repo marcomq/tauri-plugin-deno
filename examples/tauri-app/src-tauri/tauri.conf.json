@@ -1,9 +1,10 @@
 {
   "productName": "tauri-app",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "identifier": "com.tauri.tauri-deno-sample-app",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../src",
+    "beforeBuildCommand": "npm run bundle"
   },
   "app": {
     "withGlobalTauri": true,

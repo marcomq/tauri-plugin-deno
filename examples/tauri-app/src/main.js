@@ -1,31 +1,55 @@
-const tauri = window.__TAURI__
+const tauri = window.__TAURI__;
 
 let inputField;
 let outputEl;
 
-async function greetRust() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  outputEl.textContent = await tauri.core.invoke("greet_rust", { name: inputField.value });
-}
-async function greetJs() {
-  outputEl.textContent = await tauri.deno.call.greetJs(inputField.value + 2);
-  // Alternatively:
-  // outputEl.textContent = await tauri.deno.callFunction("greet_deno", [inputField.value])
+function show(text) {
+  outputEl.textContent = text;
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  tauri.deno.registerJs("greetJs"); // Optional, makes it possible to use "tauri.deno.call.greetJs"
+async function greetRust() {
+  show(await tauri.core.invoke("greet_rust", { name: inputField.value }));
+}
+
+async function greetJs() {
+  show(await tauri.deno.call.greetJs(inputField.value));
+  // Alternatively:
+  // show(await tauri.deno.callFunction("greetJs", [inputField.value]));
+}
+
+async function failJs() {
+  try {
+    await tauri.deno.call.failJs();
+  } catch (error) {
+    show(`Caught: ${error}`);
+  }
+}
+
+async function square() {
+  const api = tauri.deno.createApi();
+  const value = Number(inputField.value) || 7;
+  show(`${value}² = ${await api.slowSquare(value)} (computed in Deno)`);
+}
+
+window.addEventListener("DOMContentLoaded", async () => {
+  tauri.deno.registerJs("greetJs"); // makes "tauri.deno.call.greetJs" available
+  tauri.deno.registerJs("failJs");
   inputField = document.querySelector("#input-field");
   outputEl = document.querySelector("#output-element");
-  document.querySelector("#callback-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    switch (e.submitter.value) {
-      case "submit_rust":
-        greetRust();
-        break;
-      case "submit_deno":
-        greetJs();
-        break;
-    }
-  });
+
+  await tauri.event.listen("pong", (event) => show(`Deno answered: ${JSON.stringify(event.payload)}`));
+
+  const actions = {
+    submit_rust: greetRust,
+    submit_deno: greetJs,
+    submit_fail: failJs,
+    submit_square: square,
+    submit_ping: () => tauri.event.emit("ping", inputField.value),
+  };
+  for (const form of document.querySelectorAll("form")) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      Promise.resolve(actions[e.submitter.value]?.()).catch((error) => show(`Error: ${error}`));
+    });
+  }
 });

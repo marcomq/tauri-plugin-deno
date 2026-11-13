@@ -1,19 +1,27 @@
-use crate::models::DenoEmitSender;
-use deno_core::{op2, serde_json, OpState};
-use std::{cell::RefCell, rc::Rc};
+//  Tauri Plugin Deno
+//  © Copyright 2025, by Marco Mengelkoch
+//  Licensed under MIT License, see License file for more details
+//  git clone https://github.com/marcomq/tauri-plugin-deno
 
-#[op2(async)]
-pub async fn op_emit(
-    state: Rc<RefCell<OpState>>,
-    #[string] event: String,
-    #[serde] value: serde_json::Value,
-) -> Result<(), std::io::Error> {
-    let state = state.borrow();
-    let emit_sender = state.borrow::<DenoEmitSender>();
-    // println!("Hello {} from an op!", &event);
-    emit_sender
-        .send((event, value))
-        .await
-        .expect("cannot send message as emit");
-    Ok(())
+use crate::LOG_PREFIX;
+use crate::models::{Outgoing, OutgoingSender};
+use deno_core::{OpState, op2, serde_json};
+
+fn send(state: &OpState, msg: Outgoing) {
+    if let Err(err) = state.borrow::<OutgoingSender>().send(msg) {
+        eprintln!(
+            "{LOG_PREFIX} cannot forward {:?}: Tauri side is gone",
+            err.0
+        );
+    }
+}
+
+#[op2]
+pub fn op_emit(state: &mut OpState, #[string] event: String, #[serde] value: serde_json::Value) {
+    send(state, Outgoing::Emit(event, value));
+}
+
+#[op2(fast)]
+pub fn op_listen(state: &mut OpState, #[string] event: String) {
+    send(state, Outgoing::Listen(event));
 }

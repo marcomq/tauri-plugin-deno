@@ -4,57 +4,42 @@
 //  git clone https://github.com/marcomq/tauri-plugin-deno
 
 use crate::models::*;
-use crate::Result;
-use crate::UiSender;
-use deno_core::serde_json::Value;
-use tauri::Manager;
-use tauri::{command, AppHandle, Runtime};
-use tokio::sync::oneshot;
+use crate::{DenoHandle, Result};
+use tauri::{State, command};
 
-macro_rules! send_receive_result {
-    ($app:expr, $payload:expr) => {{
-        let (responder, receiver) = oneshot::channel::<Value>();
-        let sender_state = $app.state::<UiSender>();
-        let locked_tx = sender_state.lock().await;
-        locked_tx
-            .send(JsMsg {
-                req: $payload,
-                responder,
-            })
-            .await
-            .unwrap();
-        drop(locked_tx);
-        Ok(JsonResponse {
-            value: receiver.await.unwrap_or_default(),
-        })
-    }};
+async fn respond(deno: &DenoHandle, req: JsRequest) -> Result<JsonResponse> {
+    let value = deno.request(req).await?;
+    Ok(JsonResponse { value })
 }
 
 #[command]
-pub(crate) async fn run_code<R: Runtime>(
-    app: AppHandle<R>,
+pub(crate) async fn run_code(
+    deno: State<'_, DenoHandle>,
     payload: RunCodeRequest,
 ) -> Result<JsonResponse> {
-    send_receive_result!(app, JsRequest::RunCodeRequest(payload))
+    respond(&deno, JsRequest::RunCodeRequest(payload)).await
 }
+
 #[command]
-pub(crate) async fn register_function<R: Runtime>(
-    app: AppHandle<R>,
+pub(crate) async fn register_function(
+    deno: State<'_, DenoHandle>,
     payload: RegisterRequest,
 ) -> Result<JsonResponse> {
-    send_receive_result!(app, JsRequest::RegisterRequest(payload))
+    respond(&deno, JsRequest::RegisterRequest(payload)).await
 }
+
 #[command]
-pub(crate) async fn call_function<R: Runtime>(
-    app: AppHandle<R>,
+pub(crate) async fn call_function(
+    deno: State<'_, DenoHandle>,
     payload: CallFnRequest,
 ) -> Result<JsonResponse> {
-    send_receive_result!(app, JsRequest::CallFnRequest(payload))
+    respond(&deno, JsRequest::CallFnRequest(payload)).await
 }
+
 #[command]
-pub(crate) async fn read_variable<R: Runtime>(
-    app: AppHandle<R>,
+pub(crate) async fn read_variable(
+    deno: State<'_, DenoHandle>,
     payload: ReadVarRequest,
 ) -> Result<JsonResponse> {
-    send_receive_result!(app, JsRequest::ReadVarRequest(payload))
+    respond(&deno, JsRequest::ReadVarRequest(payload)).await
 }
