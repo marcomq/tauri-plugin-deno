@@ -199,7 +199,8 @@ Deno.test("build runs tauri with the bundle path and exits with its code", async
       env: { CARGO_TARGET_DIR: "target" },
     }).output();
     assertEquals(code, 3);
-    const out = new TextDecoder().decode(stdout);
+    // On Windows, the arguments reach tauri.cmd quoted, so `%*` echoes `"build" "--debug"`.
+    const out = new TextDecoder().decode(stdout).replaceAll('"', "");
     assertEquals(out.includes("build --debug"), true, out);
     assertEquals(out.includes(join("src-tauri", "target", "deno_dist.js")), true, out);
   } finally {
