@@ -11,7 +11,8 @@
  **/
 
 // Only `node:` imports: Deno refuses `npm:`/`jsr:` specifiers in files inside node_modules.
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PREFIX = "[tauri-plugin-deno]";
 const IS_WINDOWS = Deno.build.os === "windows";
@@ -110,7 +111,8 @@ export function defaultOutfile(targetDir = Deno.env.get("CARGO_TARGET_DIR")) {
  * in `_tauri_plugin_exports`, so every export is callable from the frontend.
  */
 export function exportsToGlobals(code) {
-  const match = code.match(/(?<=^|[\n;}])\s*export\s*\{([^}]*)\};?\s*(\/\/# sourceMappingURL=[^\n]*\s*)?$/);
+  // Trailing comments (e.g. license comments or the source map) follow the export list.
+  const match = code.match(/(?<=^|[\n;}])\s*export\s*\{([^}]*)\};?((?:\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/))*)\s*$/);
   if (!match) {
     if (/(^|[\n;}])\s*export[\s{*]/.test(code)) {
       throw new Error("unsupported export syntax in bundle output");
@@ -126,7 +128,47 @@ export function exportsToGlobals(code) {
     names.push(exported);
   }
   lines.push(`var _tauri_plugin_exports = ${JSON.stringify(names)};`);
-  return code.slice(0, match.index) + "\n" + lines.join("\n") + "\n" + (match[2]?.trimStart() ?? "");
+  const comments = match[2].trimStart();
+  return code.slice(0, match.index) + "\n" + lines.join("\n") + "\n" + (comments && `${comments}\n`);
+}
+
+const IMPORT_RE =
+  /(?<=^|[\n;}])[ \t]*import\b\s*(?:([\w$]+\s*,\s*\*\s*as\s+[\w$]+|[\w$]+\s*,\s*\{[^}]*\}|\*\s*as\s+[\w$]+|\{[^}]*\}|[\w$]+)\s*from\s*)?("[^"\n]*"|'[^'\n]*')[ \t]*;?/g;
+
+function importBindings(clause, source) {
+  const [, def, ns, named] = clause.match(/^([\w$]+)?\s*,?\s*(?:\*\s*as\s+([\w$]+)|\{([^}]*)\})?$/);
+  const parts = [];
+  if (def) parts.push(`${def} = ${source}.default`);
+  if (ns) parts.push(`${ns} = ${source}`);
+  if (named !== undefined) {
+    const props = named.split(",").map((s) => s.trim()).filter(Boolean).map((spec) => {
+      const [imported, local = imported] = spec.split(/\s+as\s+/).map((s) => s.trim());
+      return imported === local ? local : `${imported}: ${local}`;
+    });
+    parts.push(`{ ${props.join(", ")} } = ${source}`);
+  }
+  return parts;
+}
+
+/**
+ * The plugin runs the bundle as a classic script, which can't contain static imports
+ * (e.g. `node:fs`, kept by `deno bundle`) or `import.meta`. Removes the imports and lists
+ * them in `_tauri_plugin_imports` on line 1, so the runtime can preload them; their
+ * bindings are read from `__tauri_plugin_deno_imports`. Line numbers stay unchanged.
+ */
+export function importsToGlobals(code) {
+  const specifiers = [];
+  const declarations = [];
+  let out = code.replace(IMPORT_RE, (statement, clause, quoted) => {
+    const specifier = quoted.slice(1, -1);
+    if (!specifiers.includes(specifier)) specifiers.push(specifier);
+    const parts = clause ? importBindings(clause, `__tauri_plugin_deno_imports[${JSON.stringify(specifier)}]`) : [];
+    if (parts.length) declarations.push(`const ${parts.join(", ")};`);
+    return "\n".repeat(statement.split("\n").length - 1);
+  });
+  out = out.replace(/\bimport\.meta\b/g, "__tauri_plugin_deno_import_meta");
+  if (out === code) return code;
+  return `var _tauri_plugin_imports = ${JSON.stringify(specifiers)}; ${declarations.join(" ")} ${out}`;
 }
 
 const CONFIG_FLAGS = {
@@ -172,7 +214,7 @@ function createBundler(entry, outfile, config) {
         console.error(`${PREFIX} bundling failed:\n  ${messages.join("\n  ")}`);
         return false;
       }
-      writeAtomic(outfile, exportsToGlobals(Deno.readTextFileSync(tmp)));
+      writeAtomic(outfile, exportsToGlobals(importsToGlobals(Deno.readTextFileSync(tmp))));
       console.log(`${PREFIX} bundled ${entry} -> ${outfile} (${Math.round(performance.now() - started)} ms)`);
       return true;
     } catch (err) {
@@ -206,24 +248,80 @@ function serialized(task) {
   };
 }
 
-function watch(dir, onChange, ignoreDir) {
-  const watcher = Deno.watchFs(dir, { recursive: true });
-  let timer;
-  (async () => {
-    try {
-      for await (const event of watcher) {
-        // Writes to the output folder (e.g. src-tauri/target) would cause endless rebundling.
-        if (event.paths.every((p) => p.includes(".tmp") || p.startsWith(ignoreDir))) continue;
-        clearTimeout(timer);
-        timer = setTimeout(onChange, 30);
+/** Directories of the entry and of all local files it imports, according to `deno info`. */
+async function sourceDirs(entry) {
+  const dirs = [dirname(resolve(entry))];
+  try {
+    const { stdout } = await new Deno.Command(Deno.execPath(), {
+      args: ["info", "--json", entry],
+      env: { NO_COLOR: "1" },
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    for (const { specifier } of JSON.parse(new TextDecoder().decode(stdout)).modules ?? []) {
+      if (specifier.startsWith("file:") && !specifier.includes("/node_modules/")) {
+        dirs.push(dirname(fileURLToPath(specifier)));
       }
-    } catch {
-      // closed
     }
-  })();
-  return () => {
-    clearTimeout(timer);
-    watcher.close();
+  } catch {
+    // e.g. a syntax error; the directories watched so far are kept
+  }
+  return dirs;
+}
+
+/** True for the bundle and its temporary files, so writing them doesn't trigger a rebundle. */
+function outputMatcher(outfile) {
+  const paths = [resolve(outfile)];
+  try {
+    // Watch events may report the real path, e.g. /private/var instead of /var on macOS.
+    paths.push(join(Deno.realPathSync(dirname(paths[0])), basename(paths[0])));
+  } catch {
+    // not created yet
+  }
+  return (path) => paths.some((out) => path === out || path.startsWith(`${out}.`));
+}
+
+/**
+ * Rebundles when a source file changes. The watched directories are updated after
+ * every bundle, since imports may have changed; directories are only added.
+ */
+function watchSources(entry, outfile, bundle) {
+  const isOutput = outputMatcher(outfile);
+  let dirs = [];
+  let watcher = null;
+  let timer;
+  let stopped = false;
+  const update = async () => {
+    const found = [...new Set([...dirs, ...(await sourceDirs(entry))])].filter(exists).sort()
+      .filter((dir, i, all) => !all.slice(0, i).some((parent) => dir.startsWith(parent + sep)));
+    if (stopped || found.join("\n") === dirs.join("\n")) return;
+    dirs = found;
+    watcher?.close();
+    const current = (watcher = Deno.watchFs(dirs, { recursive: true }));
+    console.log(`${PREFIX} watching ${dirs.join(", ")}`);
+    (async () => {
+      try {
+        for await (const event of current) {
+          if (event.paths.every(isOutput)) continue;
+          clearTimeout(timer);
+          timer = setTimeout(rebuild, 30);
+        }
+      } catch {
+        // closed
+      }
+    })();
+  };
+  const rebuild = serialized(async () => {
+    await bundle();
+    await update();
+  });
+  return {
+    ready: update(),
+    stop: () => {
+      stopped = true;
+      clearTimeout(timer);
+      watcher?.close();
+    },
   };
 }
 
@@ -283,9 +381,9 @@ async function main(args) {
 
   let stopWatching = () => {};
   if (watching) {
-    const dir = dirname(resolve(entry));
-    stopWatching = watch(dir, serialized(bundle), dirname(resolve(outfile)));
-    console.log(`${PREFIX} watching ${dir}`);
+    const watcher = watchSources(entry, outfile, bundle);
+    await watcher.ready;
+    stopWatching = watcher.stop;
   }
   if (opts.command === "bundle") {
     if (watching) await new Promise(() => {});

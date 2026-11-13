@@ -22,6 +22,7 @@ mod deno_lib;
 mod deno_ops;
 mod error;
 mod models;
+mod node_services;
 
 #[cfg(test)]
 mod tests;
@@ -44,8 +45,10 @@ const TIMEOUT_ENV: &str = "TAURI_PLUGIN_DENO_TIMEOUT_SECS";
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
 thread_local! {
-    /// Set while the bridge emits for Deno, so Deno's own listeners skip that event.
-    static EMITTING_FOR_DENO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Name and JSON payload of the event the bridge is emitting for Deno, so Deno's own
+    /// listeners skip it. Nested events, e.g. replies emitted by Rust listeners, still pass.
+    static EMITTING_FOR_DENO: std::cell::RefCell<Option<(String, String)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Bundle created by the bundler (`tauri-plugin-deno-api bundle`), located by `build.rs`.
@@ -93,9 +96,11 @@ pub(crate) struct DenoHandle {
 
 impl DenoHandle {
     /// Starts the Deno thread with `code`. Messages from Deno arrive on the returned receiver,
-    /// Tauri events for Deno are sent with the returned sender.
+    /// Tauri events for Deno are sent with the returned sender. External packages are
+    /// resolved from `node_modules` in `base_dir` or above.
     pub(crate) fn spawn(
         code: String,
+        base_dir: std::path::PathBuf,
         timeout: Option<Duration>,
         tracebacks: bool,
     ) -> (Self, mpsc::UnboundedReceiver<Outgoing>, IncomingSender) {
@@ -104,7 +109,16 @@ impl DenoHandle {
         let (incoming, incoming_rx) = mpsc::unbounded_channel();
         let spawned = std::thread::Builder::new()
             .name("tauri-plugin-deno".into())
-            .spawn(move || deno_lib::run(code, requests_rx, incoming_rx, outgoing, tracebacks));
+            .spawn(move || {
+                deno_lib::run(
+                    code,
+                    base_dir,
+                    requests_rx,
+                    incoming_rx,
+                    outgoing,
+                    tracebacks,
+                )
+            });
         if let Err(err) = spawned {
             eprintln!("{LOG_PREFIX} cannot start the Deno thread: {err}");
         }
@@ -113,17 +127,21 @@ impl DenoHandle {
 
     pub(crate) async fn request(&self, req: JsRequest) -> Result<Value> {
         let (responder, receiver) = oneshot::channel();
-        self.requests
-            .send(JsMsg { req, responder })
-            .await
-            .map_err(|_| Error::NotRunning)?;
+        // The timeout covers waiting for queue capacity as well as the response.
+        let response = async {
+            self.requests
+                .send(JsMsg { req, responder })
+                .await
+                .map_err(|_| Error::NotRunning)?;
+            receiver.await.map_err(|_| Error::NotRunning)
+        };
         let response = match self.timeout {
-            Some(timeout) => tokio::time::timeout(timeout, receiver)
+            Some(timeout) => tokio::time::timeout(timeout, response)
                 .await
                 .map_err(|_| Error::Timeout(timeout.as_secs()))?,
-            None => receiver.await,
+            None => response.await,
         };
-        response.map_err(|_| Error::NotRunning)?.map_err(Error::Js)
+        response?.map_err(Error::Js)
     }
 }
 
@@ -136,9 +154,10 @@ fn start_bridge<R: Runtime>(
         while let Some(msg) = outgoing.recv().await {
             match msg {
                 Outgoing::Emit(name, value) => {
-                    EMITTING_FOR_DENO.set(true);
+                    let payload = serde_json::to_string(&value).unwrap_or_default();
+                    EMITTING_FOR_DENO.set(Some((name.clone(), payload)));
                     let result = app.emit(&name, value);
-                    EMITTING_FOR_DENO.set(false);
+                    EMITTING_FOR_DENO.set(None);
                     if let Err(err) = result {
                         eprintln!("{LOG_PREFIX} cannot emit '{name}': {err}");
                     }
@@ -151,7 +170,12 @@ fn start_bridge<R: Runtime>(
                 Outgoing::Listen(name) => {
                     let incoming = incoming.clone();
                     app.listen_any(name.clone(), move |event| {
-                        if EMITTING_FOR_DENO.get() {
+                        let own = EMITTING_FOR_DENO.with_borrow(|emitting| {
+                            emitting.as_ref().is_some_and(|(own_name, payload)| {
+                                *own_name == name && payload == event.payload()
+                            })
+                        });
+                        if own {
                             return;
                         }
                         let payload = serde_json::from_str(event.payload()).unwrap_or(Value::Null);
@@ -180,8 +204,14 @@ fn plugin<R: Runtime>(code: fn() -> String) -> TauriPlugin<R> {
             #[cfg(desktop)]
             let deno = desktop::init(app, api)?;
             app.manage(deno);
+            let base_dir = app
+                .path()
+                .resource_dir()
+                .or_else(|_| std::env::current_dir())
+                .unwrap_or_default();
             let (handle, outgoing, incoming) = DenoHandle::spawn(
                 code(),
+                base_dir,
                 call_timeout(std::env::var(TIMEOUT_ENV).ok().as_deref()),
                 tracebacks_enabled(std::env::var(TRACEBACK_ENV).ok().as_deref()),
             );

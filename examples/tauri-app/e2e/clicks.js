@@ -29,8 +29,10 @@
   };
 
   try {
-    // main.js attaches its submit handlers after an awaited `listen`.
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // main.js attaches its submit handlers after an awaited `listen`, then signals readiness.
+    if (!window.appReady) {
+      await new Promise((resolve) => window.addEventListener("app-ready", resolve, { once: true }));
+    }
     await click("submit_rust", "E2E", /^Hello, E2E! You've been greeted from Rust!$/);
     await click("submit_deno", "E2E", /^Hello, E2E! You've been greeted 1 time from Deno\/JS!$/);
     await click("submit_deno", "E2E", /greeted 2 times/);

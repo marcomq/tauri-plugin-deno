@@ -19,6 +19,10 @@ deno_core = "0.413"
 deno_fs = "0.170"
 deno_runtime = { version = "0.268", features = ["transpile"] }
 deno_resolver = "0.91"
+deno_error = "0.7"
+deno_media_type = "0.4"
+futures = "0.3"
+node_resolver = "0.98"
 sys_traits = "0.1.28"
 tokio = { version = "1", features = ["full"] }
 

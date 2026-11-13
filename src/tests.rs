@@ -34,7 +34,8 @@ fn spawn(
     mpsc::UnboundedReceiver<Outgoing>,
     IncomingSender,
 ) {
-    DenoHandle::spawn(code.to_string(), timeout, true)
+    let base_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    DenoHandle::spawn(code.to_string(), base_dir, timeout, true)
 }
 
 fn call(name: &str, args: Vec<Value>) -> JsRequest {
@@ -99,6 +100,44 @@ mod runtime {
         let (deno, _, _) = spawn(CODE, None);
         let value = deno.request(call("arrow", vec![json!(21)])).await.unwrap();
         assert_eq!(value, json!(42));
+    }
+
+    #[tokio::test]
+    async fn bundle_imports_are_preloaded() {
+        let code = r#"var _tauri_plugin_imports = ["node:path","node:module"]; const { join } = __tauri_plugin_deno_imports["node:path"], { createRequire } = __tauri_plugin_deno_imports["node:module"]; // main.ts
+var os = createRequire(__tauri_plugin_deno_import_meta.url)("node:os");
+function info() { return [join("a", "b"), typeof os.platform]; }
+var _tauri_plugin_exports = ["info"];"#;
+        let (deno, _, _) = spawn(code, None);
+        let value = deno.request(call("info", vec![])).await.unwrap();
+        assert_eq!(
+            value,
+            json!([std::path::Path::new("a").join("b"), "function"])
+        );
+    }
+
+    #[tokio::test]
+    async fn external_packages_are_required_from_node_modules() {
+        let code = r#"var _tauri_plugin_imports = ["cjs-fixture"]; const greet = __tauri_plugin_deno_imports["cjs-fixture"].default, { sep } = __tauri_plugin_deno_imports["cjs-fixture"];
+function info() { return [greet("x"), sep]; }
+var _tauri_plugin_exports = ["info"];"#;
+        let (deno, _, _) = spawn(code, None);
+        let value = deno.request(call("info", vec![])).await.unwrap();
+        assert_eq!(value, json!(["cjs x", std::path::MAIN_SEPARATOR_STR]));
+    }
+
+    #[test]
+    fn napi_symbols_are_exported() {
+        assert!(crate::deno_lib::napi_exported());
+    }
+
+    #[tokio::test]
+    async fn unknown_bundle_import_is_a_startup_error() {
+        for imports in [r#"["node:nope"]"#, r#"["missing-package"]"#] {
+            let (deno, _, _) = spawn(&format!("var _tauri_plugin_imports = {imports}; "), None);
+            let err = err_text(deno.request(run("1")).await);
+            assert!(err.contains("cannot load imports of deno_dist.js"), "{err}");
+        }
     }
 
     #[tokio::test]
@@ -298,6 +337,70 @@ mod runtime {
             other => panic!("expected tick, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn pending_call_receives_events() {
+        let (deno, mut outgoing, incoming) = spawn(
+            "function waitForReply() { return new Promise((resolve) => listen('reply', resolve)); }
+             _tauri_plugin_functions = ['waitForReply'];",
+            None,
+        );
+        let reply = async {
+            while let Some(msg) = outgoing.recv().await {
+                if matches!(&msg, Outgoing::Listen(name) if name == "reply") {
+                    let event = IncomingEvent {
+                        name: "reply".into(),
+                        payload: json!(7),
+                    };
+                    incoming.send(event).unwrap();
+                    return;
+                }
+            }
+        };
+        let both = async { tokio::join!(deno.request(call("waitForReply", vec![])), reply) };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(30), both)
+            .await
+            .expect("the call did not receive the event");
+        assert_eq!(result.unwrap(), json!(7));
+    }
+
+    #[tokio::test]
+    async fn unsettled_promise_times_out_and_runtime_keeps_working() {
+        let (deno, _, _) = spawn(
+            "function hangs() { return new Promise(() => {}); }
+             function add(a, b) { return a + b; }
+             _tauri_plugin_functions = ['hangs', 'add'];",
+            Some(Duration::from_secs(1)),
+        );
+        // Startup can take longer than the timeout in debug builds.
+        while deno
+            .request(call("add", vec![json!(1), json!(1)]))
+            .await
+            .is_err()
+        {}
+        let err = deno.request(call("hangs", vec![])).await.unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{err}");
+        let sum = deno.request(call("add", vec![json!(1), json!(2)])).await;
+        assert_eq!(sum.unwrap(), json!(3));
+    }
+
+    #[tokio::test]
+    async fn uncaught_errors_do_not_stop_background_work() {
+        let (deno, mut outgoing, _) = spawn(
+            "setTimeout(() => { throw new Error('boom'); }, 0);
+             Promise.reject(new Error('rejected'));
+             setTimeout(() => emit('tick', 1), 100);
+             function add(a, b) { return a + b; }
+             _tauri_plugin_functions = ['add'];",
+            None,
+        );
+        match tokio::time::timeout(Duration::from_secs(30), outgoing.recv()).await {
+            Ok(Some(Outgoing::Emit(name, _))) => assert_eq!(name, "tick"),
+            other => panic!("expected tick, got {other:?}"),
+        }
+        let sum = deno.request(call("add", vec![json!(1), json!(2)])).await;
+        assert_eq!(sum.unwrap(), json!(3));
+    }
 }
 
 mod tauri_app {
@@ -375,5 +478,33 @@ mod tauri_app {
             "Deno received its own emits: {} > {sent}",
             count()
         );
+    }
+
+    #[test]
+    fn rust_replies_to_deno_events_reach_deno() {
+        let app = mock_builder()
+            .plugin(plugin(|| {
+                "var replies = []; listen('pong', (p) => replies.push(p)); function ping() { emit('ping', 1); }
+                 _tauri_plugin_functions = ['ping'];"
+                    .to_string()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let handle = app.handle().clone();
+        app.listen_any("ping", move |_| handle.emit("pong", 2).unwrap());
+        let deno = app.deno();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            tauri::async_runtime::block_on(deno.call_function("ping", vec![])).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            let replies = tauri::async_runtime::block_on(deno.read_variable("replies")).unwrap();
+            if replies != json!([]) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no reply reached Deno"
+            );
+        }
     }
 }

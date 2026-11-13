@@ -12,6 +12,7 @@ deno.lock
 /.tauri
 /target
 node_modules/
+!/tests/fixtures/node_modules/
 
 !dist-js/*.iife.js
 dist-js

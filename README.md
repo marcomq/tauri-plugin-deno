@@ -8,7 +8,7 @@ The code runs in an embedded Deno runtime (V8), inside the app process. No sidec
 
 ## How it works
 
-- Your backend code lives in `src-tauri/src-deno/main.ts` (or `main.js`) and may import local files, `npm:` and `jsr:` packages.
+- Your backend code lives in `src-tauri/src-deno/main.ts` (or `main.js`) and may import local files, `npm:`, `jsr:` and `node:` modules, see [npm packages, Node built-ins and native addons](#npm-packages-node-built-ins-and-native-addons).
 - The CLI bundles it with `deno bundle` into a single file `src-tauri/target/deno_dist.js`. The plugin embeds this file at compile time (in debug builds it is re-read from disk on every start).
 - On startup, a single background thread runs the bundle. Frontend calls, events and results are passed over channels.
 
@@ -49,7 +49,7 @@ deno run -A npm:tauri-plugin-deno-api <command> [options] [-- tauri args]
   --config <json>   Bundle options: minify, keepNames, sourcemap, external
 ```
 
-In `dev`, changes in `src-tauri/src-deno` are rebundled and restart the app, like Rust changes do.
+In `dev`, changes in `src-tauri/src-deno` and in other local files it imports are rebundled and restart the app, like Rust changes do.
 `dev` and `build` pass `TAURI_PLUGIN_DENO_DIST` to tauri, so the Rust build always finds the bundle. Without the CLI, the plugin's `build.rs` looks for `deno_dist.js` in the target directory, or uses `TAURI_PLUGIN_DENO_DIST` (absolute path) if set.
 
 ## Usage
@@ -60,10 +60,11 @@ Only functions that are exported or listed in `_tauri_plugin_functions` can be c
 
 ```typescript
 // src-tauri/src-deno/main.ts
-function greet(name: string): string {
+export function greet(name: string): string {
   return `Hello ${name} from Deno`;
 }
-_tauri_plugin_functions = [greet.name]; // or: addTauri(greet)
+// Functions that aren't exported can be listed instead:
+// _tauri_plugin_functions = [fn.name]; or addTauri(fn)
 
 export async function readConfig(path: string) {
   return JSON.parse(await Deno.readTextFile(path));
@@ -134,6 +135,40 @@ let value = app.deno().run_code("1 + 1").await?;
 ```
 
 Also available: `register_function` and `read_variable`.
+
+### npm packages, Node built-ins and native addons
+
+- Pure JS packages (`npm:` or from `node_modules`) and `node:` built-ins are bundled or loaded automatically, also CommonJS packages.
+- Packages with native code (`.node` files) can't be bundled. Install them with npm and mark them as external, so they are loaded with `require` from `node_modules` at runtime (example: the napi-rs package `@node-rs/crc32`):
+
+  ```sh
+  deno run -A npm:tauri-plugin-deno-api build --config '{"external":["@node-rs/crc32"]}'
+  ```
+
+- External packages are searched in `node_modules` folders in the Tauri resource directory and its parents. In `tauri dev` this finds the project's `node_modules`. For the production build, ship the package, its dependencies and (for napi-rs packages) the platform package as resources in `tauri.conf.json`:
+
+  ```json
+  "bundle": { "resources": {
+    "../node_modules/@node-rs/crc32": "node_modules/@node-rs/crc32",
+    "../node_modules/@node-rs/crc32-darwin-arm64": "node_modules/@node-rs/crc32-darwin-arm64"
+  } }
+  ```
+
+- Native addons look up the N-API functions in the app executable, so it has to export them. Add this to `src-tauri/build.rs`:
+
+  ```rust
+  fn main() {
+      if let Ok(arg) = std::env::var("DEP_TAURI_PLUGIN_DENO_NAPI_LINK_ARG") {
+          println!("cargo:rustc-link-arg-bins={arg}");
+      }
+      tauri_build::build()
+  }
+  ```
+
+  Without it, loading a native addon fails with an error that explains this.
+- Native addons are platform specific: build the app on each target platform (or install the addon for it) and sign the shipped `.node`/`.dylib` files on macOS together with the app.
+- Only Node-API (N-API) addons work, like in Deno. Addons using the V8/NAN API directly do not.
+- C libraries without a Node wrapper can be used with `Deno.dlopen` (FFI). Ship them as resources as well and pass their path from Rust.
 
 ## Configuration
 

@@ -27,7 +27,8 @@ async function failJs() {
 
 async function square() {
   const api = tauri.deno.createApi();
-  const value = Number(inputField.value) || 7;
+  const text = inputField.value.trim();
+  const value = text !== "" && Number.isFinite(Number(text)) ? Number(text) : 7;
   show(`${value}² = ${await api.slowSquare(value)} (computed in Deno)`);
 }
 
@@ -52,4 +53,6 @@ window.addEventListener("DOMContentLoaded", async () => {
       Promise.resolve(actions[e.submitter.value]?.()).catch((error) => show(`Error: ${error}`));
     });
   }
+  window.appReady = true; // read by the e2e test (e2e/clicks.js)
+  window.dispatchEvent(new Event("app-ready"));
 });

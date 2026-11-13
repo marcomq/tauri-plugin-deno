@@ -9632,9 +9632,13 @@ name = "tauri-plugin-deno"
 version = "0.4.0"
 dependencies = [
  "deno_core",
+ "deno_error",
  "deno_fs",
+ "deno_media_type",
  "deno_resolver",
  "deno_runtime",
+ "futures",
+ "node_resolver",
  "serde",
  "sys_traits",
  "tauri",

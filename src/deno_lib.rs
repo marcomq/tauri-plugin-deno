@@ -9,7 +9,7 @@ use crate::models::*;
 use deno_core::FsModuleLoader;
 use deno_core::ModuleSpecifier;
 use deno_core::PollEventLoopOptions;
-use deno_core::error::{CoreError, CoreErrorKind};
+use deno_core::error::{CoreError, CoreErrorKind, JsError};
 use deno_core::serde_json::Value;
 use deno_core::serde_v8;
 use deno_core::v8;
@@ -22,12 +22,19 @@ use deno_runtime::permissions::RuntimePermissionDescriptorParser;
 use deno_runtime::worker::MainWorker;
 use deno_runtime::worker::WorkerOptions;
 use deno_runtime::worker::WorkerServiceOptions;
+use futures::StreamExt;
+use futures::future::LocalBoxFuture;
+use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 type JsResult<T> = std::result::Result<T, String>;
+type CallResult = Result<v8::Global<v8::Value>, Box<JsError>>;
+type Responder = oneshot::Sender<JsResult<Value>>;
+type PendingCalls = FuturesUnordered<LocalBoxFuture<'static, (String, CallResult, Responder)>>;
 
 /// Makes `console.*` safe when stdout/stderr are invalid, e.g. on a Windows
 /// release build without a console (`windows_subsystem = "windows"`).
@@ -47,6 +54,112 @@ for (const name of ["log", "info", "warn", "error", "debug", "trace", "dir", "ta
 const EXPORTS_VAR: &str = "_tauri_plugin_exports";
 const FUNCTIONS_VAR: &str = "_tauri_plugin_functions";
 const DISPATCH_FN: &str = "__tauriPluginDispatch";
+
+/// The bundler moves static imports (e.g. `node:fs`) out of the bundle, which runs as a
+/// classic script, and lists their specifiers in this var at the very start of the bundle.
+/// They are loaded as ES module beforehand and exposed in `IMPORTS_GLOBAL` / `IMPORT_META_GLOBAL`.
+const IMPORTS_VAR: &str = "_tauri_plugin_imports";
+const IMPORTS_GLOBAL: &str = "__tauri_plugin_deno_imports";
+const IMPORT_META_GLOBAL: &str = "__tauri_plugin_deno_import_meta";
+
+/// Native addons crash the process if the executable doesn't export the N-API
+/// functions, so loading one fails with a hint instead.
+const NAPI_GUARD: &str = r#"
+import Module from "node:module";
+const message =
+  "[tauri-plugin-deno] Native Node addons (.node) need the N-API symbols exported by the app executable. " +
+  "Add to src-tauri/build.rs: if let Ok(arg) = std::env::var(\"DEP_TAURI_PLUGIN_DENO_NAPI_LINK_ARG\") " +
+  "{ println!(\"cargo:rustc-link-arg-bins={arg}\"); }";
+// Logged as well, because some addon loaders replace the error with their own.
+const fail = () => {
+  console.error(message);
+  throw new Error(message);
+};
+Module._extensions[".node"] = fail;
+process.dlopen = fail;
+"#;
+
+pub(crate) fn napi_exported() -> bool {
+    let symbol = c"napi_create_function";
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn dlsym(
+                handle: *mut std::ffi::c_void,
+                symbol: *const std::ffi::c_char,
+            ) -> *mut std::ffi::c_void;
+        }
+        // RTLD_DEFAULT
+        #[cfg(target_vendor = "apple")]
+        let handle = -2isize as *mut std::ffi::c_void;
+        #[cfg(not(target_vendor = "apple"))]
+        let handle = std::ptr::null_mut();
+        // SAFETY: dlsym with RTLD_DEFAULT and a valid C string only looks up a symbol.
+        !unsafe { dlsym(handle, symbol.as_ptr()) }.is_null()
+    }
+    #[cfg(windows)]
+    {
+        unsafe extern "system" {
+            fn GetModuleHandleW(name: *const u16) -> *mut std::ffi::c_void;
+            fn GetProcAddress(
+                module: *mut std::ffi::c_void,
+                name: *const std::ffi::c_char,
+            ) -> *mut std::ffi::c_void;
+        }
+        // SAFETY: a null name returns the executable's handle; the lookup has no side effects.
+        !unsafe { GetProcAddress(GetModuleHandleW(std::ptr::null()), symbol.as_ptr()) }.is_null()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+fn bundle_imports(code: &str) -> JsResult<Option<Vec<String>>> {
+    let Some(rest) = code.strip_prefix(&format!("var {IMPORTS_VAR} = ")) else {
+        return Ok(None);
+    };
+    deno_core::serde_json::Deserializer::from_str(rest)
+        .into_iter::<Vec<String>>()
+        .next()
+        .transpose()
+        .map_err(|err| format!("invalid {IMPORTS_VAR}: {err}"))
+}
+
+/// Returns an ES module that imports URLs like `node:fs`, and a classic script that
+/// loads bare and relative specifiers (externals such as native npm packages) with
+/// `require` from `node_modules`. The script runs separately, because deno_core doesn't
+/// report exceptions thrown while evaluating a side module.
+fn imports_code(specifiers: &[String]) -> (String, String) {
+    let mut module = String::from("import { createRequire } from \"node:module\";\n");
+    let mut script = String::from(
+        "(() => {\n\
+         const require = globalThis.__tauri_plugin_deno_require;\n\
+         delete globalThis.__tauri_plugin_deno_require;\n\
+         const ns = (m) => m?.[Symbol.toStringTag] === \"Module\" ? m : { ...m, default: m };\n",
+    );
+    let mut entries = Vec::new();
+    for (i, specifier) in specifiers.iter().enumerate() {
+        let quoted = Value::from(specifier.as_str()).to_string();
+        let is_url = ModuleSpecifier::parse(specifier).is_ok_and(|url| url.scheme().len() > 1);
+        if is_url {
+            module.push_str(&format!("import * as m{i} from {quoted};\n"));
+            entries.push(format!("{quoted}: m{i}"));
+        } else {
+            script.push_str(&format!(
+                "{IMPORTS_GLOBAL}[{quoted}] = ns(require({quoted}));\n"
+            ));
+        }
+    }
+    module.push_str(&format!(
+        "globalThis.{IMPORTS_GLOBAL} = {{ {} }};\n\
+         globalThis.{IMPORT_META_GLOBAL} = import.meta;\n\
+         globalThis.__tauri_plugin_deno_require = createRequire(import.meta.url);\n",
+        entries.join(", ")
+    ));
+    script.push_str("})();\n");
+    (module, script)
+}
 
 pub(crate) fn error_message(err: &CoreError, tracebacks: bool) -> String {
     kind_message(&err.0, tracebacks)
@@ -83,6 +196,19 @@ struct DenoState {
 impl DenoState {
     fn js_err(&self, err: impl Into<CoreError>) -> String {
         error_message(&err.into(), self.tracebacks)
+    }
+
+    async fn run_side_module(&mut self, url: &ModuleSpecifier, code: String) -> JsResult<()> {
+        let id = self
+            .worker
+            .js_runtime
+            .load_side_es_module_from_code(url, code)
+            .await
+            .map_err(|err| self.js_err(err))?;
+        self.worker
+            .evaluate_module(id)
+            .await
+            .map_err(|err| self.js_err(err))
     }
 
     /// Converts like `JSON.stringify`, the same way Tauri sends values to the frontend.
@@ -183,19 +309,24 @@ impl DenoState {
         Ok(Value::Bool(true))
     }
 
-    async fn call(&mut self, name: &str, args: Vec<Value>) -> JsResult<Value> {
+    /// Calls the function; the returned future settles with its (awaited) result
+    /// while the event loop is polled.
+    fn start_call(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+    ) -> JsResult<impl Future<Output = CallResult> + use<>> {
         let function = self
             .functions
             .get(name)
             .cloned()
             .ok_or_else(|| format!("Function '{name}' has not been registered yet"))?;
         let args = self.v8_args_from_json(args)?;
-        let call = self.worker.js_runtime.call_with_args(&function, &args);
-        let value = self
-            .worker
-            .js_runtime
-            .with_event_loop_promise(call, PollEventLoopOptions::default())
-            .await
+        Ok(self.worker.js_runtime.call_with_args(&function, &args))
+    }
+
+    fn finish_call(&mut self, name: &str, result: CallResult) -> JsResult<Value> {
+        let value = result
             .map_err(|err| format!("Error calling Deno function '{name}': {}", self.js_err(err)))?;
         self.json_from_v8(value)
     }
@@ -205,15 +336,34 @@ impl DenoState {
         self.exec("<tauri-plugin-deno:read>", variable)
     }
 
-    async fn handle(&mut self, req: JsRequest) -> JsResult<Value> {
-        match req {
+    fn respond(&self, responder: Responder, result: JsResult<Value>) {
+        if let Err(err) = &result
+            && self.tracebacks
+        {
+            eprintln!("{LOG_PREFIX} {err}");
+        }
+        let _ = responder.send(result);
+    }
+
+    /// Answers the request, except function calls, which are added to `pending`
+    /// and answered once their promise settles.
+    fn handle(&mut self, msg: JsMsg, pending: &mut PendingCalls) {
+        let result = match msg.req {
             JsRequest::RunCodeRequest(req) => self.exec("<tauri-plugin-deno:run>", req.value),
             JsRequest::ReadVarRequest(req) => self.read_var(&req.value),
             JsRequest::RegisterRequest(req) => {
                 self.register(&req.function_name, req.number_of_args)
             }
-            JsRequest::CallFnRequest(req) => self.call(&req.function_name, req.args).await,
-        }
+            JsRequest::CallFnRequest(req) => match self.start_call(&req.function_name, req.args) {
+                Ok(call) => {
+                    let (name, responder) = (req.function_name, msg.responder);
+                    pending.push(Box::pin(async move { (name, call.await, responder) }));
+                    return;
+                }
+                Err(err) => Err(err),
+            },
+        };
+        self.respond(msg.responder, result);
     }
 
     fn dispatch_event(&mut self, event: IncomingEvent) {
@@ -257,46 +407,45 @@ impl DenoState {
 enum Wake {
     Request(Option<JsMsg>),
     Event(Option<IncomingEvent>),
+    Call(String, CallResult, Responder),
     EventLoop(Result<(), CoreError>),
 }
 
+/// Function calls stay pending while requests and events are handled, so a call can
+/// await an event. An unsettled call is only ended by the caller's timeout.
 async fn serve(
     mut state: DenoState,
     mut requests: mpsc::Receiver<JsMsg>,
     mut events: mpsc::UnboundedReceiver<IncomingEvent>,
 ) {
+    let mut pending = PendingCalls::new();
     let mut idle = false;
     let mut events_open = true;
     loop {
         let wake = tokio::select! {
             msg = requests.recv() => Wake::Request(msg),
             event = events.recv(), if events_open => Wake::Event(event),
+            Some((name, result, responder)) = pending.next(), if !pending.is_empty() => {
+                Wake::Call(name, result, responder)
+            }
             result = state.worker.js_runtime.run_event_loop(PollEventLoopOptions::default()), if !idle => {
                 Wake::EventLoop(result)
             }
         };
+        idle = false;
         match wake {
             Wake::Request(None) => break,
-            Wake::Request(Some(msg)) => {
-                let result = state.handle(msg.req).await;
-                if let Err(err) = &result
-                    && state.tracebacks
-                {
-                    eprintln!("{LOG_PREFIX} {err}");
-                }
-                let _ = msg.responder.send(result);
-                idle = false;
-            }
-            Wake::Event(Some(event)) => {
-                state.dispatch_event(event);
-                idle = false;
-            }
+            Wake::Request(Some(msg)) => state.handle(msg, &mut pending),
+            Wake::Event(Some(event)) => state.dispatch_event(event),
             Wake::Event(None) => events_open = false,
-            Wake::EventLoop(result) => {
-                idle = true;
-                if let Err(err) = result {
-                    eprintln!("{LOG_PREFIX} uncaught error: {}", state.js_err(err));
-                }
+            Wake::Call(name, result, responder) => {
+                let result = state.finish_call(&name, result);
+                state.respond(responder, result);
+            }
+            // After an error, other timers or I/O may still be pending, so keep polling.
+            Wake::EventLoop(Ok(())) => idle = true,
+            Wake::EventLoop(Err(err)) => {
+                eprintln!("{LOG_PREFIX} uncaught error: {}", state.js_err(err));
             }
         }
     }
@@ -341,7 +490,7 @@ fn create_worker(outgoing: OutgoingSender) -> MainWorker {
             deno_rt_native_addon_loader: None,
             broadcast_channel: Default::default(),
             feature_checker: Default::default(),
-            node_services: Default::default(),
+            node_services: Some(crate::node_services::create()),
             npm_process_state_provider: Default::default(),
             root_cert_store_provider: Default::default(),
             fetch_dns_resolver: Default::default(),
@@ -357,7 +506,12 @@ fn create_worker(outgoing: OutgoingSender) -> MainWorker {
     )
 }
 
-async fn start(code: String, outgoing: OutgoingSender, tracebacks: bool) -> JsResult<DenoState> {
+async fn start(
+    code: String,
+    base_dir: &Path,
+    outgoing: OutgoingSender,
+    tracebacks: bool,
+) -> JsResult<DenoState> {
     let mut state = DenoState {
         worker: create_worker(outgoing),
         functions: HashMap::new(),
@@ -369,6 +523,29 @@ async fn start(code: String, outgoing: OutgoingSender, tracebacks: bool) -> JsRe
         .js_runtime
         .execute_script("<tauri-plugin-deno:stdio-guard>", STDIO_GUARD)
         .map_err(|err| format!("stdio guard: {}", state.js_err(err)))?;
+    if !napi_exported() {
+        let url =
+            ModuleSpecifier::parse("file:///tauri-plugin-deno/napi-guard.js").expect("static url");
+        state
+            .run_side_module(&url, NAPI_GUARD.to_string())
+            .await
+            .map_err(|err| format!("napi guard: {err}"))?;
+    }
+    if let Some(specifiers) = bundle_imports(&code)? {
+        // import.meta.url is the base for `require` and relative imports.
+        let url = ModuleSpecifier::from_file_path(base_dir.join("deno_dist.js"))
+            .map_err(|()| format!("invalid base directory {}", base_dir.display()))?;
+        let (module, script) = imports_code(&specifiers);
+        state
+            .run_side_module(&url, module)
+            .await
+            .map_err(|err| format!("cannot load imports of deno_dist.js: {err}"))?;
+        state
+            .worker
+            .js_runtime
+            .execute_script("<tauri-plugin-deno:require>", script)
+            .map_err(|err| format!("cannot load imports of deno_dist.js: {}", state.js_err(err)))?;
+    }
     state
         .worker
         .js_runtime
@@ -381,6 +558,7 @@ async fn start(code: String, outgoing: OutgoingSender, tracebacks: bool) -> JsRe
 /// Runs the Deno runtime on the current thread until `requests` is closed.
 pub(crate) fn run(
     code: String,
+    base_dir: PathBuf,
     requests: mpsc::Receiver<JsMsg>,
     events: mpsc::UnboundedReceiver<IncomingEvent>,
     outgoing: OutgoingSender,
@@ -397,7 +575,7 @@ pub(crate) fn run(
         }
     };
     tokio_runtime.block_on(async move {
-        match start(code, outgoing, tracebacks).await {
+        match start(code, &base_dir, outgoing, tracebacks).await {
             Ok(state) => serve(state, requests, events).await,
             Err(err) => {
                 eprintln!(

@@ -63,6 +63,30 @@ fn resolve_dist() -> PathBuf {
     );
 }
 
+/// Native Node addons (`.node`) look up the `napi_*` functions in the executable, so it
+/// has to export them. The lists in `napi/` are copied from `deno_napi` 0.191 (used by
+/// `deno_runtime` 0.268) and must be updated with it.
+fn napi_link_arg() -> Option<String> {
+    let os = std::env::var("CARGO_CFG_TARGET_OS").ok()?;
+    let list = |name: &str| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("napi")
+            .join(name)
+    };
+    match os.as_str() {
+        "macos" => Some(format!(
+            "-Wl,-exported_symbols_list,{}",
+            list("macos.def").display()
+        )),
+        "linux" | "android" | "freebsd" | "openbsd" => Some(format!(
+            "-Wl,--export-dynamic-symbol-list={}",
+            list("linux.def").display()
+        )),
+        "windows" => Some(format!("/DEF:{}", list("windows.def").display())),
+        _ => None,
+    }
+}
+
 fn main() {
     tauri_plugin::Builder::new(COMMANDS)
         .global_api_script_path("./dist-js/index.iife.js")
@@ -74,6 +98,13 @@ fn main() {
         "cargo:rustc-env=TAURI_PLUGIN_DENO_DIST_PATH={}",
         resolve_dist().display()
     );
+
+    // Apps read this as DEP_TAURI_PLUGIN_DENO_NAPI_LINK_ARG in their build.rs.
+    if let Some(arg) = napi_link_arg() {
+        println!("cargo:napi_link_arg={arg}");
+        println!("cargo:rustc-link-arg={arg}");
+        println!("cargo:rerun-if-changed=napi");
+    }
 
     // Windows: test binaries need a Common-Controls v6 manifest, otherwise they abort
     // with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139). See tauri-apps/tauri #13419.
