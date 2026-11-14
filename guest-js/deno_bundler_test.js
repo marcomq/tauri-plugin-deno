@@ -25,6 +25,17 @@ Deno.test("static imports are preloaded and keep line numbers", () => {
   );
 });
 
+Deno.test("import.meta in strings, comments, templates and regexes is unchanged", () => {
+  const code = 'var a = "import.meta.url", b = `import.meta ${{ u: import.meta.url }.u} import.meta`;\n' +
+    "// import.meta\n/* import.meta */ var r = /import.meta[\"`]/, d = 1 / 2 / import.meta.dirname, e = x.import.meta;\n";
+  const M = "__tauri_plugin_deno_import_meta";
+  assertEquals(
+    importsToGlobals(code),
+    'var _tauri_plugin_imports = [];  var a = "import.meta.url", b = `import.meta ${{ u: ' + M + ".url }.u} import.meta`;\n" +
+      "// import.meta\n/* import.meta */ var r = /import.meta[\"`]/, d = 1 / 2 / " + M + ".dirname, e = x.import.meta;\n",
+  );
+});
+
 Deno.test("minified imports are preloaded", () => {
   assertEquals(
     importsToGlobals('import{readFileSync as r}from"node:fs";var x=r;'),

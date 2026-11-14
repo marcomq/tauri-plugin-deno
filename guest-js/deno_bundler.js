@@ -150,6 +150,90 @@ function importBindings(clause, source) {
   return parts;
 }
 
+const WORD_CHAR = /[\p{ID_Continue}$]/u;
+const WORD = /[\p{ID_Continue}$]+/uy;
+const META = /\s*\.\s*meta(?![\p{ID_Continue}$])/uy;
+const REGEX_AFTER_WORD = new Set(
+  ["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"],
+);
+
+/**
+ * Replaces `import.meta` in code, but not in strings, comments, template text or regex
+ * literals. A `/` starts a regex unless it follows a value (word, number, `)`, `]`, `}`).
+ */
+function replaceImportMeta(code, replacement) {
+  let out = "";
+  let copied = 0;
+  let prev = "";
+  let depth = 0;
+  const templates = [];
+  let i = 0;
+  const skipTemplateText = () => {
+    while (i < code.length) {
+      const c = code[i++];
+      if (c === "\\") i++;
+      else if (c === "`") return;
+      else if (c === "$" && code[i] === "{") {
+        i++;
+        templates.push(depth++);
+        return;
+      }
+    }
+  };
+  while (i < code.length) {
+    const c = code[i];
+    if (c === "/" && code[i + 1] === "/") {
+      i = code.indexOf("\n", i);
+      if (i < 0) i = code.length;
+    } else if (c === "/" && code[i + 1] === "*") {
+      i = code.indexOf("*/", i + 2);
+      i = i < 0 ? code.length : i + 2;
+    } else if (c === '"' || c === "'") {
+      for (i++; i < code.length && code[i] !== c && code[i] !== "\n"; i++) if (code[i] === "\\") i++;
+      i++;
+      prev = c;
+    } else if (c === "`") {
+      i++;
+      skipTemplateText();
+      prev = c;
+    } else if (c === "/" && (!/[\p{ID_Continue}$)\]}`"']$/u.test(prev) || REGEX_AFTER_WORD.has(prev))) {
+      let inClass = false;
+      for (i++; i < code.length && code[i] !== "\n"; i++) {
+        if (code[i] === "\\") i++;
+        else if (code[i] === "[") inClass = true;
+        else if (code[i] === "]") inClass = false;
+        else if (code[i] === "/" && !inClass) break;
+      }
+      i++;
+      prev = ")";
+    } else if (WORD_CHAR.test(c)) {
+      WORD.lastIndex = i;
+      const word = WORD.exec(code)[0];
+      META.lastIndex = i + word.length;
+      if (word === "import" && prev !== "." && META.test(code)) {
+        out += code.slice(copied, i) + replacement;
+        i = copied = META.lastIndex;
+        prev = "meta";
+      } else {
+        i += word.length;
+        prev = word;
+      }
+    } else {
+      if (c === "{") depth++;
+      if (c === "}" && templates.at(-1) === --depth) {
+        templates.pop();
+        i++;
+        skipTemplateText();
+        prev = "`";
+        continue;
+      }
+      if (!/\s/.test(c)) prev = c;
+      i++;
+    }
+  }
+  return out + code.slice(copied);
+}
+
 /**
  * The plugin runs the bundle as a classic script, which can't contain static imports
  * (e.g. `node:fs`, kept by `deno bundle`) or `import.meta`. Removes the imports and lists
@@ -166,7 +250,7 @@ export function importsToGlobals(code) {
     if (parts.length) declarations.push(`const ${parts.join(", ")};`);
     return "\n".repeat(statement.split("\n").length - 1);
   });
-  out = out.replace(/\bimport\.meta\b/g, "__tauri_plugin_deno_import_meta");
+  out = replaceImportMeta(out, "__tauri_plugin_deno_import_meta");
   if (out === code) return code;
   return `var _tauri_plugin_imports = ${JSON.stringify(specifiers)}; ${declarations.join(" ")} ${out}`;
 }

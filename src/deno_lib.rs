@@ -23,10 +23,11 @@ use deno_runtime::worker::MainWorker;
 use deno_runtime::worker::WorkerOptions;
 use deno_runtime::worker::WorkerServiceOptions;
 use futures::StreamExt;
-use futures::future::LocalBoxFuture;
+use futures::future::{self, Either, LocalBoxFuture};
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -34,7 +35,9 @@ use tokio::sync::{mpsc, oneshot};
 type JsResult<T> = std::result::Result<T, String>;
 type CallResult = Result<v8::Global<v8::Value>, Box<JsError>>;
 type Responder = oneshot::Sender<JsResult<Value>>;
-type PendingCalls = FuturesUnordered<LocalBoxFuture<'static, (String, CallResult, Responder)>>;
+/// `None` once the caller stopped waiting (e.g. after a timeout).
+type PendingCalls =
+    FuturesUnordered<LocalBoxFuture<'static, Option<(String, CallResult, Responder)>>>;
 
 /// Makes `console.*` safe when stdout/stderr are invalid, e.g. on a Windows
 /// release build without a console (`windows_subsystem = "windows"`).
@@ -356,8 +359,16 @@ impl DenoState {
             }
             JsRequest::CallFnRequest(req) => match self.start_call(&req.function_name, req.args) {
                 Ok(call) => {
-                    let (name, responder) = (req.function_name, msg.responder);
-                    pending.push(Box::pin(async move { (name, call.await, responder) }));
+                    let (name, mut responder) = (req.function_name, msg.responder);
+                    // Dropping the call future only releases it; the JS keeps running.
+                    pending.push(Box::pin(async move {
+                        let closed = responder.closed();
+                        let result = match future::select(pin!(call), pin!(closed)).await {
+                            Either::Left((result, _)) => result,
+                            Either::Right(_) => return None,
+                        };
+                        Some((name, result, responder))
+                    }));
                     return;
                 }
                 Err(err) => Err(err),
@@ -408,6 +419,7 @@ enum Wake {
     Request(Option<JsMsg>),
     Event(Option<IncomingEvent>),
     Call(String, CallResult, Responder),
+    Abandoned,
     EventLoop(Result<(), CoreError>),
 }
 
@@ -425,9 +437,10 @@ async fn serve(
         let wake = tokio::select! {
             msg = requests.recv() => Wake::Request(msg),
             event = events.recv(), if events_open => Wake::Event(event),
-            Some((name, result, responder)) = pending.next(), if !pending.is_empty() => {
-                Wake::Call(name, result, responder)
-            }
+            Some(call) = pending.next(), if !pending.is_empty() => match call {
+                Some((name, result, responder)) => Wake::Call(name, result, responder),
+                None => Wake::Abandoned,
+            },
             result = state.worker.js_runtime.run_event_loop(PollEventLoopOptions::default()), if !idle => {
                 Wake::EventLoop(result)
             }
@@ -442,6 +455,7 @@ async fn serve(
                 let result = state.finish_call(&name, result);
                 state.respond(responder, result);
             }
+            Wake::Abandoned => {}
             // After an error, other timers or I/O may still be pending, so keep polling.
             Wake::EventLoop(Ok(())) => idle = true,
             Wake::EventLoop(Err(err)) => {

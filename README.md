@@ -49,7 +49,7 @@ deno run -A npm:tauri-plugin-deno-api <command> [options] [-- tauri args]
   --config <json>   Bundle options: minify, keepNames, sourcemap, external
 ```
 
-In `dev`, changes in `src-tauri/src-deno` and in other local files it imports are rebundled and restart the app, like Rust changes do.
+In `dev`, changes in `src-tauri/src-deno` and in other local files it imports are rebundled. Tauri restarts the app only for changes in folders it watches (`src-tauri`). For imported files outside it (e.g. `../shared`), the running app keeps the old code: restart it manually, or let tauri watch the folder, e.g. `dev -- --additional-watch-folders ../shared`.
 `dev` and `build` pass `TAURI_PLUGIN_DENO_DIST` to tauri, so the Rust build always finds the bundle. Without the CLI, the plugin's `build.rs` looks for `deno_dist.js` in the target directory, or uses `TAURI_PLUGIN_DENO_DIST` (absolute path) if set.
 
 ## Usage
@@ -145,14 +145,24 @@ Also available: `register_function` and `read_variable`.
   deno run -A npm:tauri-plugin-deno-api build --config '{"external":["@node-rs/crc32"]}'
   ```
 
-- External packages are searched in `node_modules` folders in the Tauri resource directory and its parents. In `tauri dev` this finds the project's `node_modules`. For the production build, ship the package, its dependencies and (for napi-rs packages) the platform package as resources in `tauri.conf.json`:
+- External packages are searched in `node_modules` folders in the Tauri resource directory and its parents. In `tauri dev` this finds the project's `node_modules`. For the production build, ship the package and its dependencies as resources in `tauri.conf.json`:
 
   ```json
   "bundle": { "resources": {
-    "../node_modules/@node-rs/crc32": "node_modules/@node-rs/crc32",
-    "../node_modules/@node-rs/crc32-darwin-arm64": "node_modules/@node-rs/crc32-darwin-arm64"
+    "../node_modules/@node-rs/crc32": "node_modules/@node-rs/crc32"
   } }
   ```
+
+  napi-rs packages also need the platform package of the build target, which npm only installs for the current platform. Add it in the platform-specific config ([`tauri.macos.conf.json`, `tauri.linux.conf.json`, `tauri.windows.conf.json`](https://v2.tauri.app/reference/config/#platform-specific-configuration)), which Tauri merges into `tauri.conf.json`. Example for macOS on Apple Silicon (`@node-rs/crc32-darwin-arm64`; on Intel Macs `-darwin-x64`, on Linux e.g. `-linux-x64-gnu`, on Windows e.g. `-win32-x64-msvc`):
+
+  ```json
+  // tauri.macos.conf.json
+  { "bundle": { "resources": {
+    "../node_modules/@node-rs/crc32-darwin-arm64": "node_modules/@node-rs/crc32-darwin-arm64"
+  } } }
+  ```
+
+  To build for another architecture of the same OS, pass its resources with `--config` instead.
 
 - Native addons look up the N-API functions in the app executable, so it has to export them. Add this to `src-tauri/build.rs`:
 

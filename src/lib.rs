@@ -5,6 +5,8 @@
 
 use deno_core::serde_json::{self, Value};
 pub use models::*;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{
     AppHandle, Emitter, Listener, Manager, Runtime,
@@ -44,12 +46,10 @@ const TIMEOUT_ENV: &str = "TAURI_PLUGIN_DENO_TIMEOUT_SECS";
 /// Override with `TAURI_PLUGIN_DENO_TIMEOUT_SECS` (`0` disables it).
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
 
-thread_local! {
-    /// Name and JSON payload of the event the bridge is emitting for Deno, so Deno's own
-    /// listeners skip it. Nested events, e.g. replies emitted by Rust listeners, still pass.
-    static EMITTING_FOR_DENO: std::cell::RefCell<Option<(String, String)>> =
-        const { std::cell::RefCell::new(None) };
-}
+/// Deno's emits that its own listener hasn't seen yet; each entry is skipped once. Shared
+/// across threads, since Tauri queues an emit while its listeners are locked and another
+/// thread may dispatch it later. Queued emits only keep name and payload to match on.
+type OwnEmits = Arc<Mutex<Vec<(String, String)>>>;
 
 /// Bundle created by the bundler (`tauri-plugin-deno-api bundle`), located by `build.rs`.
 static TAURI_PLUGIN_DENO_DIST: &str = include_str!(env!("TAURI_PLUGIN_DENO_DIST_PATH"));
@@ -145,20 +145,26 @@ impl DenoHandle {
     }
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn start_bridge<R: Runtime>(
     app: AppHandle<R>,
     mut outgoing: mpsc::UnboundedReceiver<Outgoing>,
     incoming: IncomingSender,
 ) {
+    let own_emits = OwnEmits::default();
+    let mut listened = HashSet::new();
     tauri::async_runtime::spawn(async move {
         while let Some(msg) = outgoing.recv().await {
             match msg {
                 Outgoing::Emit(name, value) => {
-                    let payload = serde_json::to_string(&value).unwrap_or_default();
-                    EMITTING_FOR_DENO.set(Some((name.clone(), payload)));
-                    let result = app.emit(&name, value);
-                    EMITTING_FOR_DENO.set(None);
-                    if let Err(err) = result {
+                    if listened.contains(&name) {
+                        let payload = serde_json::to_string(&value).unwrap_or_default();
+                        lock(&own_emits).push((name.clone(), payload));
+                    }
+                    if let Err(err) = app.emit(&name, value) {
                         eprintln!("{LOG_PREFIX} cannot emit '{name}': {err}");
                     }
                 }
@@ -168,16 +174,19 @@ fn start_bridge<R: Runtime>(
                     );
                 }
                 Outgoing::Listen(name) => {
+                    listened.insert(name.clone());
                     let incoming = incoming.clone();
+                    let own_emits = own_emits.clone();
                     app.listen_any(name.clone(), move |event| {
-                        let own = EMITTING_FOR_DENO.with_borrow(|emitting| {
-                            emitting.as_ref().is_some_and(|(own_name, payload)| {
-                                *own_name == name && payload == event.payload()
-                            })
-                        });
-                        if own {
+                        let mut own = lock(&own_emits);
+                        if let Some(i) = own
+                            .iter()
+                            .position(|(n, payload)| *n == name && payload == event.payload())
+                        {
+                            own.remove(i);
                             return;
                         }
+                        drop(own);
                         let payload = serde_json::from_str(event.payload()).unwrap_or(Value::Null);
                         let _ = incoming.send(IncomingEvent {
                             name: name.clone(),

@@ -373,11 +373,14 @@ var _tauri_plugin_exports = ["info"];"#;
             Some(Duration::from_secs(1)),
         );
         // Startup can take longer than the timeout in debug builds.
-        while deno
-            .request(call("add", vec![json!(1), json!(1)]))
-            .await
-            .is_err()
-        {}
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            match deno.request(call("add", vec![json!(1), json!(1)])).await {
+                Ok(_) => break,
+                Err(Error::Timeout(_)) if std::time::Instant::now() < deadline => {}
+                Err(err) => panic!("Deno runtime did not start: {err}"),
+            }
+        }
         let err = deno.request(call("hangs", vec![])).await.unwrap_err();
         assert!(matches!(err, Error::Timeout(_)), "{err}");
         let sum = deno.request(call("add", vec![json!(1), json!(2)])).await;
@@ -478,6 +481,42 @@ mod tauri_app {
             "Deno received its own emits: {} > {sent}",
             count()
         );
+    }
+
+    #[test]
+    fn deferred_own_events_are_skipped_on_another_thread() {
+        let app = mock_builder()
+            .plugin(plugin(|| {
+                "var count = 0; listen('echo', () => { count += 1; }); function send() { emit('echo', 1); }
+                 _tauri_plugin_functions = ['send'];"
+                    .to_string()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let deno = app.deno();
+        let count = || {
+            tauri::async_runtime::block_on(deno.read_variable("count"))
+                .unwrap()
+                .as_u64()
+                .unwrap()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while count() == 0 {
+            assert!(std::time::Instant::now() < deadline, "no event reached Deno");
+            app.emit("echo", json!(2)).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let before = count();
+        // The handler lock is held here, so the bridge's emit is queued and later
+        // dispatched on this thread.
+        let handle = app.handle().clone();
+        app.listen_any("trigger", move |_| {
+            tauri::async_runtime::block_on(handle.deno().call_function("send", vec![])).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        app.emit("trigger", json!(null)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(count(), before, "Deno received its own deferred emit");
     }
 
     #[test]
