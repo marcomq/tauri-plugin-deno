@@ -1,10 +1,10 @@
 [package]
 name = "tauri-plugin-deno"
-version = "0.3.0"
+version = "0.4.0"
 authors = [ "Marco Mengelkoch" ]
 description = "A tauri 2 plugin to use javascript code (deno) in the backend."
-edition = "2021"
-rust-version = "1.77.2"
+edition = "2024"
+rust-version = "1.90"
 exclude = ["/examples", "/webview-dist", "/webview-src", "/node_modules"]
 links = "tauri-plugin-deno"
 license = "MIT"
@@ -13,21 +13,21 @@ repository = "https://github.com/marcomq/tauri-plugin-deno"
 
 [dependencies]
 tauri = { version = "2" }
-serde = "1.0"
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-deno_core = "0.338"
-deno_fs = "0.103.0"
-deno_error = "0.5.5"
-deno_runtime = { version = "0.201", features = ["transpile"] } 
-deno_resolver = "0.24.0"
-sys_traits = "0.1.8"
-reqwest = "0.12"
-tokio = { version = "1.43.0", features = ["full"] }
-lazy_static = "1.5.0"
+deno_core = "0.413"
+deno_fs = "0.170"
+deno_runtime = { version = "0.268", features = ["transpile"] }
+deno_resolver = "0.91"
+deno_error = "0.7"
+deno_media_type = "0.4"
+futures = "0.3"
+node_resolver = "0.98"
+sys_traits = "0.1.28"
+tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }
 
-
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["sysinfoapi"] }
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

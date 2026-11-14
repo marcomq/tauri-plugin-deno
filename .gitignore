@@ -1,18 +1,18 @@
 /.vs
 .DS_Store
 .Thumbs.db
+.serena/
 *.sublime*
 .idea/
 debug.log
-package-lock.json
 .vscode/settings.json
 yarn.lock
 deno.lock
 
 /.tauri
 /target
-Cargo.lock
 node_modules/
+!/tests/fixtures/node_modules/
 
 !dist-js/*.iife.js
 dist-js

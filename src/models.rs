@@ -5,9 +5,9 @@
 
 use deno_core::serde_json::Value;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum JsRequest {
     RegisterRequest(RegisterRequest),
     CallFnRequest(CallFnRequest),
@@ -34,24 +34,38 @@ pub struct RegisterRequest {
     pub number_of_args: Option<u8>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallFnRequest {
     pub function_name: String,
+    #[serde(default)]
     pub args: Vec<Value>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonResponse {
     pub value: Value,
 }
 
-pub struct JsMsg {
+pub(crate) struct JsMsg {
     pub req: JsRequest,
-    pub responder: oneshot::Sender<Value>,
+    pub responder: oneshot::Sender<Result<Value, String>>,
 }
 
-pub type UiSender = Mutex<mpsc::Sender<JsMsg>>;
-pub type EmitPayload = (String, Value);
-pub type DenoEmitSender = mpsc::Sender<EmitPayload>;
+/// Messages from the Deno runtime to the Tauri side.
+#[derive(Debug)]
+pub(crate) enum Outgoing {
+    Emit(String, Value),
+    Listen(String),
+}
+
+/// A Tauri event forwarded into the Deno runtime.
+#[derive(Debug)]
+pub(crate) struct IncomingEvent {
+    pub name: String,
+    pub payload: Value,
+}
+
+pub(crate) type OutgoingSender = mpsc::UnboundedSender<Outgoing>;
+pub(crate) type IncomingSender = mpsc::UnboundedSender<IncomingEvent>;

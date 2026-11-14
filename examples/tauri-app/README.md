@@ -1,18 +1,26 @@
 # Deno example
 
-This example uses vanilla javascript.
-But you may use just any javascript framework you want. It may be recommended to use some of those that are already included in tauri.
-
-The main modification was in `package.json` to add a `pretauri` scripts step to transpile Deno JS into a single file in `target/deno_dist.js`.
+A vanilla JavaScript frontend with a Deno backend in `src-tauri/src-deno`. Any frontend framework works the same way.
 
 ```bash
-"deno run --allow-read --allow-write --allow-env --allow-net --allow-run npm:tauri-plugin-deno-api src-tauri/src-deno/main.js&",
+npm install
+npm run dev     # bundle, watch src-tauri/src-deno and run `tauri dev`
+npm run build   # bundle and run `tauri build`
+npm run bundle  # only create src-tauri/target/deno_dist.js
+npm run e2e -- src-tauri/target/release/tauri-app  # click test, see below
 ```
 
-This will also listen to changes and re-transpile the file.
+What the example shows (`src-tauri/src-deno/main.js` and `src/main.js`):
+- `greetJs` / `failJs`: functions listed in `_tauri_plugin_functions`, called via `registerJs` and `call.*`; the error of `failJs` is caught in the frontend.
+- `slowSquare`: an exported async function, called through `createApi()`.
+- `ping` / `pong`: the frontend emits an event, Deno listens and answers with `emit`.
+- `other.ts`: TypeScript imports are bundled as well.
 
-Also, `src-tauri/src-deno` was added that contain the Deno backend files.
+Changes compared to a plain `create-tauri-app` project:
+- `.plugin(tauri_plugin_deno::init())` in `src-tauri/src/lib.rs` and `"deno:default"` in the capabilities (done by `tauri add deno`)
+- the `dev`, `build` and `bundle` scripts in `package.json`, and `deno` as dev dependency
+- `"beforeBuildCommand": "npm run bundle"` in `src-tauri/tauri.conf.json`
 
-Steps that are expected to be added after `tauri add deno`:
-- In tauri rust code, `.plugin(tauri_plugin_deno::init()` was added to `src-tauri/src/lib.rs`, 
-- In package.json, `tauri-plugin-deno-api` will be added to dependencies.
+## Click test
+
+`e2e/run.mjs` starts a built app with `TAURI_E2E_SCRIPT=e2e/clicks.js`. The hook in `src-tauri/src/lib.rs` loads that script into the page; it clicks every button, checks the output and the app exits with the result. Without the environment variable the hook does nothing. CI runs it on Linux, macOS and Windows.

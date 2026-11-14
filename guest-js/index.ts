@@ -6,78 +6,95 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-export let call: { [index: string]: Function } = {}; // array of functions
+/** Functions registered with `registerJs` / `registerFunction`, callable as `call.name(...)`. */
+export let call: { [index: string]: (...args: any[]) => Promise<any> } = {};
 
-export async function runCode(code: string): Promise<string> {
-  return await invoke<{ value: string }>('plugin:deno|run_code', {
-    payload: {
-      value: code,
-    },
-  }).then((r: any) => {
-    return r.value;
-  });
+/**
+ * Typed view of a Deno module: every function becomes async.
+ * Use with `import type * as backend from '../src-tauri/src-deno/main.ts'`.
+ */
+export type DenoApi<T> = {
+  [K in keyof T as T[K] extends (...args: any[]) => any ? K : never]:
+    T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never
+};
+
+async function invokeValue<T>(command: string, payload: Record<string, unknown>): Promise<T> {
+  const response = await invoke<{ value: T }>(`plugin:deno|${command}`, { payload });
+  return response.value;
 }
 
-/** 
- * Registers function on server and makes it available via `call.{jsFunctionName}`
- *  @param {string} denoFunctionCall - The deno js function call
- *  @param {number} [numberOfArgs] - Number of arguments, used for validation in deno, use -1 to ignore this value
- *  @param {string} [jsFunctionName] - Name that is used in javscript: "call.jsFunctionName". Must not contain dots.
+/** Runs JavaScript code in the Deno backend and returns its result. Needs `deno:allow-run-code`. */
+export async function runCode<T = any>(code: string): Promise<T> {
+  return invokeValue<T>('run_code', { value: code });
+}
+
+/**
+ * Registers a Deno function on the backend and makes it available via `call.{jsFunctionName}`.
+ * Needs `deno:allow-register-function`.
+ *  @param {string} denoFunctionCall - Name of the global Deno function, e.g. `greet` or `api.greet`
+ *  @param {number} [numberOfArgs] - Number of arguments the function is called with; rejected if
+ *    the function requires more. Use -1 or leave out to skip the check.
+ *  @param {string} [jsFunctionName] - Name used in `call.jsFunctionName`. Must not contain dots.
  */
 export async function registerFunction(
   denoFunctionCall: string,
   numberOfArgs?: number,
-  jsFunctionName?: string): Promise<string> {
+  jsFunctionName?: string): Promise<boolean> {
   if (numberOfArgs !== undefined && numberOfArgs < 0) {
     numberOfArgs = undefined;
   }
-  return await invoke<{ value: string }>('plugin:deno|register_function', {
-    payload: {
-      denoFunctionCall,
-      numberOfArgs
-    },
-  }).then((r: any) => {
-    registerJs(denoFunctionCall, jsFunctionName);
-    return r.value;
+  const result = await invokeValue<boolean>('register_function', {
+    functionName: denoFunctionCall,
+    numberOfArgs,
   });
+  registerJs(denoFunctionCall, jsFunctionName);
+  return result;
 }
 
-/** 
- * No server invocation - assumes that function has already been registered server-side
- * Makes function available as `call.{jsFunctionName}`
- *  @param {string} denoFunctionCall - The deno js function call
- *  @param {string} [jsFunctionName] - Name that is used in javascript: "call.jsFunctionName". Must not contain dots.
+/**
+ * No server invocation - assumes that the function has already been registered in Deno,
+ * e.g. via `_tauri_plugin_functions` or `export`. Makes it available as `call.{jsFunctionName}`.
+ *  @param {string} denoFunctionCall - Name of the Deno function
+ *  @param {string} [jsFunctionName] - Name used in `call.jsFunctionName`. Must not contain dots.
  */
-export async function registerJs(denoFunctionCall: string, jsFunctionName?: string) {
+export function registerJs(denoFunctionCall: string, jsFunctionName?: string): void {
   if (jsFunctionName === undefined) {
     jsFunctionName = denoFunctionCall.replaceAll(".", "_");
   }
-  call[jsFunctionName] = function (...args: any[]) { return callFunction(denoFunctionCall, args) };
+  call[jsFunctionName] = (...args: any[]) => callFunction(denoFunctionCall, args);
 }
 
 /**
- * Calling previously registered function 
+ * Calls a registered or exported Deno function. Rejects with the error message if the
+ * function throws, isn't registered or the call times out.
  */
-export async function callFunction(functionName: string, args: any[]): Promise<string> {
-  return invoke<{ value: string }>('plugin:deno|call_function', {
-    payload: {
-      functionName,
-      args,
-    },
-  }).then((r: any) => {
-    return r.value;
-  });
+export async function callFunction<T = any>(functionName: string, args: any[] = []): Promise<T> {
+  return invokeValue<T>('call_function', { functionName, args });
+}
+
+/** Reads a global variable from Deno. Needs `deno:allow-read-variable`. */
+export async function readVariable<T = any>(value: string): Promise<T> {
+  return invokeValue<T>('read_variable', { value });
 }
 
 /**
- * Read variable name from deno
+ * Returns a typed proxy for the functions of a Deno module:
+ * ```ts
+ * import type * as backend from '../src-tauri/src-deno/main.ts'
+ * const api = createApi<typeof backend>()
+ * const text = await api.greet('world') // typed as Promise<string>
+ * ```
+ * Each property access calls `callFunction(name, args)`; the function must be exported
+ * or listed in `_tauri_plugin_functions`.
  */
-export async function readVariable(value: string): Promise<string> {
-  return invoke<{ value: string }>('plugin:deno|read_variable', {
-    payload: {
-      value,
+export function createApi<T = Record<string, (...args: any[]) => any>>(): DenoApi<T> {
+  return new Proxy({}, {
+    get(_target, name) {
+      // `then` is excluded so the proxy isn't treated as a promise when awaited.
+      if (typeof name !== 'string' || name === 'then') {
+        return undefined;
+      }
+      return (...args: any[]) => callFunction(name, args);
     },
-  }).then((r: any) => {
-    return r.value;
-  });
+  }) as DenoApi<T>;
 }

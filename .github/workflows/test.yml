@@ -1,0 +1,121 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    env:
+      TAURI_PLUGIN_DENO_DIST: ${{ github.workspace }}/tests/fixtures/deno_dist.js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install dependencies (ubuntu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_PLUGIN_DENO_DIST: ${{ github.workspace }}/tests/fixtures/deno_dist.js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install dependencies (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # windows-latest ships LLVM/clang, which V8 needs.
+      - name: test
+        run: cargo test --all-targets
+
+  # guest-js (rollup + tsc) and the bundler CLI, including running it from node_modules.
+  js:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pnpm install
+      - run: pnpm test
+
+  # Bundles the example with the CLI and builds a release binary with the local plugin.
+  example:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: examples/tauri-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/tauri-app/src-tauri
+
+      - name: install dependencies (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
+
+      - name: install frontend dependencies
+        run: npm install
+
+      - name: build example (CLI bundle + tauri build)
+        run: npm run build -- --no-bundle
+
+      # Clicks the buttons in the release binary (Rust, Deno, error, async export, events).
+      - name: click test (release binary)
+        shell: bash
+        run: |
+          BIN=src-tauri/target/release/tauri-app
+          if [ "$RUNNER_OS" = Windows ]; then BIN=$BIN.exe; fi
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a node e2e/run.mjs "$BIN"
+          else
+            node e2e/run.mjs "$BIN"
+          fi

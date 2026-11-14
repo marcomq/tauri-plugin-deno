@@ -1,19 +1,24 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
-    "deno:bundle_and_tauri": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run npm:tauri-plugin-deno-api src-tauri/src-deno/main.js & tauri",
-    "npm:tauri": "tauri",
-    "tauri": "deno task deno:bundle_and_tauri"
+    "dev": "deno run -A npm:tauri-plugin-deno-api dev",
+    "build": "deno run -A npm:tauri-plugin-deno-api build",
+    "bundle": "deno run -A npm:tauri-plugin-deno-api bundle",
+    "tauri": "tauri",
+    "e2e": "node e2e/run.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.3",
+    "@tauri-apps/api": "^2.12.0",
     "tauri-plugin-deno-api": "file:../../"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.3",
-    "deno": "^2.2.4"
+    "@tauri-apps/cli": "^2.12.0",
+    "deno": "^2.9.0"
+  },
+  "allowScripts": {
+    "deno": true
   }
 }
